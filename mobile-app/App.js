@@ -77,7 +77,18 @@ export default function App() {
     resetAllData();
     if (wsRef.current) wsRef.current.close();
     addLog(`已切换为 ${connectionMode === 'wifi' ? 'WLAN 无线' : connectionMode === 'usb' ? 'USB 数据线' : '蓝牙'} 连接模式。`, 'system');
-  }, [connectio  // 建立并监听 WebSocket 连接
+  }, [connectionMode]);
+
+  // 当连接成功时，自动拉取初始资产数据
+  useEffect(() => {
+    if (isConnected) {
+      sendRequest('get_assets');
+      sendRequest('get_services');
+      sendRequest('get_reports');
+    }
+  }, [isConnected]);
+
+  // 建立并监听 WebSocket 连接
   function connectToWs(connectUrl) {
     setConnecting(true);
     try {
