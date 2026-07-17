@@ -15,7 +15,7 @@ import {
 
 export default function App() {
   // 连接状态
-  const [connectionMode, setConnectionMode] = useState('wifi');
+  const [connectionMode, setConnectionMode] = useState('usb');
   const [url, setUrl] = useState('ws://localhost:3001'); // 默认连接 localhost
   const [usbUrl, setUsbUrl] = useState('ws://localhost:3001');
   const [isConnected, setIsConnected] = useState(false);
@@ -87,6 +87,57 @@ export default function App() {
       sendRequest('get_reports');
     }
   }, [isConnected]);
+
+  // 启动时自动进行 USB 即插即用连接检测
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      addLog('正在尝试自动检测并建立 USB 即插即用连接...', 'system');
+      setConnecting(true);
+      try {
+        const socket = new WebSocket('ws://localhost:3001');
+        wsRef.current = socket;
+
+        socket.onopen = () => {
+          setIsConnected(true);
+          setConnecting(false);
+          addLog('已自动连通 USB 数据线！进入快速控制状态。', 'recv');
+          sendRequest('ping');
+        };
+
+        socket.onclose = () => {
+          setIsConnected(false);
+          setConnecting(false);
+          addLog('未检测到活动 USB 调试设备。请插入数据线并配置映射。', 'system');
+          resetAllData();
+          wsRef.current = null;
+        };
+
+        socket.onerror = () => {
+          setIsConnected(false);
+          setConnecting(false);
+          wsRef.current = null;
+        };
+
+        socket.onmessage = (event) => {
+          try {
+            const packet = JSON.parse(event.data);
+            const { type, event: eventName, request_id, status, data, error } = packet;
+
+            if (type === 'push') {
+              handlePush(eventName, data);
+            } else if (type === 'response') {
+              handleResponse(request_id, status, data, error);
+            }
+          } catch (e) {
+            // ignore
+          }
+        };
+      } catch (err) {
+        setConnecting(false);
+      }
+    }, 800);
+    return () => clearTimeout(timer);
+  }, []);
 
   function getTimestamp() {
     const now = new Date();
