@@ -12,6 +12,7 @@ import {
   StatusBar,
   FlatList,
 } from 'react-native';
+import * as Network from 'expo-network';
 
 export default function App() {
   // 连接状态
@@ -140,53 +141,100 @@ export default function App() {
     addLog('正在自动搜寻 USB 共享网络电脑设备...', 'system');
     setConnecting(true);
     
-    // 扫描常见的安卓 USB 热点网段
-    const subnets = ['192.168.42', '192.168.43', '192.168.49', '192.168.8', '192.168.137'];
-    const hostIds = [2, 3, 4, 5, 6, 7, 8, 129, 130, 131, 132];
-    
     let foundUrl = null;
-    const promises = [];
 
-    for (const sub of subnets) {
-      for (const hid of hostIds) {
-        const targetIp = `${sub}.${hid}`;
-        const checkUrl = `http://${targetIp}:3001/health`;
+    // 1. 动态获取 IP 并进行全网段扫描
+    try {
+      const ip = await Network.getIpAddressAsync();
+      addLog(`本机 IP 地址: ${ip}`, 'system');
+      
+      const ipRegex = /^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/;
+      const match = ip.match(ipRegex);
+      if (match && ip !== '127.0.0.1' && ip !== '0.0.0.0') {
+        const subnet = match[1];
+        const deviceHostId = parseInt(ip.split('.')[3], 10);
         
-        const promise = (async () => {
-          try {
-            const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), 1200);
-            const res = await fetch(checkUrl, { signal: controller.signal });
-            clearTimeout(id);
-            if (res.ok) {
-              const data = await res.json();
-              if (data.status === 'ok') {
-                foundUrl = `ws://${targetIp}:3001`;
+        addLog(`正在扫描动态生成的子网 ${subnet}.0/24...`, 'system');
+        const dynamicPromises = [];
+        
+        for (let hid = 1; hid <= 254; hid++) {
+          if (hid === deviceHostId) continue;
+          
+          const targetIp = `${subnet}.${hid}`;
+          const checkUrl = `http://${targetIp}:3001/health`;
+          
+          const promise = (async () => {
+            try {
+              const controller = new AbortController();
+              const id = setTimeout(() => controller.abort(), 1200);
+              const res = await fetch(checkUrl, { signal: controller.signal });
+              clearTimeout(id);
+              if (res.ok) {
+                const data = await res.json();
+                if (data.status === 'ok') {
+                  foundUrl = `ws://${targetIp}:3001`;
+                }
               }
-            }
-          } catch (e) {}
-        })();
-        promises.push(promise);
+            } catch (e) {}
+          })();
+          dynamicPromises.push(promise);
+        }
+        
+        await Promise.all(dynamicPromises);
       }
+    } catch (netErr) {
+      addLog(`获取本机 IP 或动态扫描失败: ${netErr.message || netErr}`, 'system');
     }
 
-    // 针对本地开发和模拟器的 localhost 检测
-    promises.push((async () => {
-      try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 1000);
-        const res = await fetch('http://localhost:3001/health', { signal: controller.signal });
-        clearTimeout(id);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.status === 'ok') {
-            foundUrl = 'ws://localhost:3001';
-          }
+    // 2. 如果动态扫描没有找到，则使用预设网段和 localhost 进行兜底扫描
+    if (!foundUrl) {
+      addLog('未在当前子网找到 Agent，正在尝试常用兜底网段和本地回环检测...', 'system');
+      const fallbackSubnets = ['192.168.42', '192.168.43', '192.168.49', '192.168.8', '192.168.137'];
+      const fallbackHostIds = [2, 3, 4, 5, 6, 7, 8, 129, 130, 131, 132];
+      
+      const fallbackPromises = [];
+      
+      for (const sub of fallbackSubnets) {
+        for (const hid of fallbackHostIds) {
+          const targetIp = `${sub}.${hid}`;
+          const checkUrl = `http://${targetIp}:3001/health`;
+          
+          const promise = (async () => {
+            try {
+              const controller = new AbortController();
+              const id = setTimeout(() => controller.abort(), 1200);
+              const res = await fetch(checkUrl, { signal: controller.signal });
+              clearTimeout(id);
+              if (res.ok) {
+                const data = await res.json();
+                if (data.status === 'ok') {
+                  foundUrl = `ws://${targetIp}:3001`;
+                }
+              }
+            } catch (e) {}
+          })();
+          fallbackPromises.push(promise);
         }
-      } catch (e) {}
-    })());
+      }
+      
+      // Localhost detection (for simulator/development)
+      fallbackPromises.push((async () => {
+        try {
+          const controller = new AbortController();
+          const id = setTimeout(() => controller.abort(), 1000);
+          const res = await fetch('http://localhost:3001/health', { signal: controller.signal });
+          clearTimeout(id);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'ok') {
+              foundUrl = 'ws://localhost:3001';
+            }
+          }
+        } catch (e) {}
+      })());
 
-    await Promise.all(promises);
+      await Promise.all(fallbackPromises);
+    }
 
     if (foundUrl) {
       addLog(`发现可用讲台电脑: ${foundUrl}，正在连通...`, 'system');
