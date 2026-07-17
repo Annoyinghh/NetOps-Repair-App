@@ -204,20 +204,6 @@ export default function App() {
       scanForAgent();
     }, 1000);
     return () => clearTimeout(timer);
-  }, []);        if (type === 'push') {
-              handlePush(eventName, data);
-            } else if (type === 'response') {
-              handleResponse(request_id, status, data, error);
-            }
-          } catch (e) {
-            // ignore
-          }
-        };
-      } catch (err) {
-        setConnecting(false);
-      }
-    }, 800);
-    return () => clearTimeout(timer);
   }, []);
 
   function getTimestamp() {
