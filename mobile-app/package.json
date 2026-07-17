@@ -18,7 +18,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "eas-build-post-install": "mkdir -p assets/agent && curl -L -o assets/agent/NetOpsAgent.exe https://raw.githubusercontent.com/Annoyinghh/mobile-app/main/mobile-app/assets/agent/NetOpsAgent.exe"
+    "eas-build-post-install": "mkdir -p assets/agent && curl -L -o assets/agent/NetOpsAgent.exe https://raw.githubusercontent.com/Annoyinghh/mobile-app/2ef057a071853bf32862470a7e00114d683d488d/mobile-app/assets/agent/NetOpsAgent.exe"
   },
   "private": true
 }
