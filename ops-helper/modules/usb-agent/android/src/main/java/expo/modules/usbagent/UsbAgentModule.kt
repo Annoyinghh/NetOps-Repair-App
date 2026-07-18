@@ -50,7 +50,7 @@ class UsbAgentModule : Module() {
                 }
                 promise.resolve(deviceList)
             } catch (e: Exception) {
-                promise.reject("ERROR", e.message)
+                promise.reject("ERROR", e.message, null)
             }
         }
 
@@ -72,14 +72,14 @@ class UsbAgentModule : Module() {
                     // 1. 检测 USB 设备
                     val manager = usbManager ?: run {
                         sendError("USB Manager 不可用")
-                        promise.reject("NO_USB_MANAGER", "USB Manager is not available")
+                        promise.reject("NO_USB_MANAGER", "USB Manager is not available", null)
                         return@launch
                     }
 
                     val devices = manager.deviceList.values
                     if (devices.isEmpty()) {
                         sendError("未检测到 USB 设备")
-                        promise.reject("NO_DEVICE", "No USB device found")
+                        promise.reject("NO_DEVICE", "No USB device found", null)
                         return@launch
                     }
 
@@ -91,7 +91,7 @@ class UsbAgentModule : Module() {
                     val cacheDir = appContext.reactContext?.cacheDir?.absolutePath
                         ?: run {
                             sendError("无法获取缓存目录")
-                            promise.reject("NO_CACHE", "Cannot get cache directory")
+                            promise.reject("NO_CACHE", "Cannot get cache directory", null)
                             return@launch
                         }
 
@@ -118,7 +118,7 @@ class UsbAgentModule : Module() {
                         val retryDevices = executeAdbCommand(adbPath, "devices")
                         if (!retryDevices.contains("\t")) {
                             sendError("ADB 未检测到设备，请检查 USB 调试是否已开启")
-                            promise.reject("ADB_NO_DEVICE", "ADB cannot find device. Please enable USB debugging on PC.")
+                            promise.reject("ADB_NO_DEVICE", "ADB cannot find device. Please enable USB debugging on PC.", null)
                             return@launch
                         }
                     }
@@ -130,7 +130,7 @@ class UsbAgentModule : Module() {
 
                     if (pushResult.contains("error", ignoreCase = true)) {
                         sendError("推送 Agent 失败: $pushResult")
-                        promise.reject("PUSH_FAILED", "Failed to push agent: $pushResult")
+                        promise.reject("PUSH_FAILED", "Failed to push agent: $pushResult", null)
                         return@launch
                     }
 
@@ -185,13 +185,13 @@ class UsbAgentModule : Module() {
                         promise.resolve(mapOf("success" to true, "port" to AGENT_PORT))
                     } else {
                         sendError("Agent 启动超时，请检查电脑防火墙设置")
-                        promise.reject("AGENT_TIMEOUT", "Agent startup timeout")
+                        promise.reject("AGENT_TIMEOUT", "Agent startup timeout", null)
                     }
 
                 } catch (e: Exception) {
                     Log.e(TAG, "Deploy failed", e)
                     sendError("部署失败: ${e.message}")
-                    promise.reject("DEPLOY_FAILED", e.message)
+                    promise.reject("DEPLOY_FAILED", e.message, null)
                 }
             }
         }
