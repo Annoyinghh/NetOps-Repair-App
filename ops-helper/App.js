@@ -13,7 +13,7 @@ import {
   FlatList,
 } from 'react-native';
 import * as Network from 'expo-network';
-import UsbAgentModule from './modules/usb-agent/src/index';
+import UsbAgentModule from 'usb-agent';
 
 export default function App() {
   // 连接状态
