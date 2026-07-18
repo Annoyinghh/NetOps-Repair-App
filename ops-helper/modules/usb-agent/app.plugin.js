@@ -4,7 +4,9 @@
  * 添加 USB 权限和原生模块配置
  */
 
-const { withAndroidManifest, AndroidConfig } = require('expo/config-plugins');
+const { withAndroidManifest, AndroidConfig, withDangerousMod } = require('expo/config-plugins');
+const fs = require('fs');
+const path = require('path');
 
 /**
  * 修改 AndroidManifest 添加 USB 权限
@@ -58,6 +60,30 @@ function withUsbAndroidManifest(config) {
 }
 
 /**
+ * 自动写入 device_filter.xml 资源文件
+ */
+function withUsbDeviceFilter(config) {
+  return withDangerousMod(config, [
+    'android',
+    async (config) => {
+      const resDir = path.join(config.modRequest.platformProjectRoot, 'app/src/main/res');
+      const xmlDir = path.join(resDir, 'xml');
+      if (!fs.existsSync(xmlDir)) {
+        fs.mkdirSync(xmlDir, { recursive: true });
+      }
+      const filterPath = path.join(xmlDir, 'device_filter.xml');
+      const deviceFilterContent = `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 匹配所有 USB 设备 -->
+    <usb-device />
+</resources>`;
+      fs.writeFileSync(filterPath, deviceFilterContent, 'utf-8');
+      return config;
+    },
+  ]);
+}
+
+/**
  * UsbAgent 插件
  */
 function withUsbAgent(config) {
@@ -70,6 +96,9 @@ function withUsbAgent(config) {
 
   // 修改 AndroidManifest
   config = withUsbAndroidManifest(config);
+
+  // 写入 XML 设备过滤器
+  config = withUsbDeviceFilter(config);
 
   return config;
 }
