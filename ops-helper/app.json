@@ -1,26 +1,36 @@
 {
   "expo": {
-    "name": "mobile-app",
+    "name": "Windows 智能运维助手",
     "slug": "mobile-app",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.xuzhixuan.netopsrepair"
     },
     "android": {
       "package": "com.xuzhixuan.netopsrepair",
+      "permissions": [
+        "android.permission.USB_PERMISSION",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#0A0D14",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "blockedPermissions": []
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      "./modules/usb-agent/app.plugin.js"
+    ],
     "extra": {
       "eas": {
         "projectId": "449e3d98-b2b0-4ed4-9a93-631045c0e128"
