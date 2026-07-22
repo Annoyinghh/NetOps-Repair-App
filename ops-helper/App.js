@@ -504,11 +504,13 @@ export default function App() {
       addLog(`[成功] ${req.action} 已顺利完成。`, 'recv');
       
       if (req.action === 'get_assets') {
-        setAssetSpecs(data.specs);
-        setSoftwareList(data.software);
-        setPatchesList(data.patches);
+        // A connection must never bring down the app because an older Agent
+        // omitted optional asset collections. Keep the UI state type-stable.
+        setAssetSpecs(data?.specs || null);
+        setSoftwareList(Array.isArray(data?.software) ? data.software : []);
+        setPatchesList(Array.isArray(data?.patches) ? data.patches : []);
       } else if (req.action === 'get_services') {
-        setServices(data);
+        setServices(Array.isArray(data) ? data : []);
       } else if (req.action === 'network_detect') {
         setNetResults(data);
         setShowNetResults(true);
@@ -534,7 +536,7 @@ export default function App() {
         setInspectionResult(data.data);
         sendRequest('get_reports'); // reload reports
       } else if (req.action === 'get_reports') {
-        setReportsList(data);
+        setReportsList(Array.isArray(data) ? data : []);
       } else if (req.action === 'repair_execute') {
         setRepairExecuting(false);
         Alert.alert('自动修复成功', data.message);
