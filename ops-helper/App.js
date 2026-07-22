@@ -15,12 +15,14 @@ import {
   Modal,
 } from 'react-native';
 import * as Network from 'expo-network';
-import UsbAgentModule from 'usb-agent';
 
 const AGENT_PORT = 3001;
 const USB_TETHER_DEFAULT_URL = `ws://192.168.42.2:${AGENT_PORT}`;
 const SCAN_TIMEOUT_MS = 1200;
 const SCAN_CONCURRENCY = 12;
+// USB discovery now uses USB tethering/LAN. Keep the old deployment path
+// inert so an APK without the custom native module can always start.
+const UsbAgentModule = null;
 const COMMAND_PRESETS = [
   { label: '系统信息', command: 'systeminfo' },
   { label: '网络配置', command: 'ipconfig /all' },
@@ -338,17 +340,6 @@ export default function App() {
     }, 2000);
     return () => clearTimeout(timer);
   }, []);
-
-  // USB 设备连接时自动触发部署
-  useEffect(() => {
-    const sub = UsbAgentModule.addOnUsbDeviceAttachedListener((event) => {
-      addLog(`USB 设备已连接: ${event.deviceName}`, 'system');
-      if (!isConnected && !connecting) {
-        usbDeployAgent();
-      }
-    });
-    return () => sub?.remove();
-  }, [isConnected, connecting]);
 
   function normalizeAgentUrl(value) {
     let candidate = (value || '').trim();
