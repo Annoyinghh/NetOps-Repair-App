@@ -1,13 +1,12 @@
 {
   "name": "netops-agent-standalone",
   "version": "1.0.0",
-  "description": "NetOps PC Agent - Standalone Version for ADB Deployment",
+  "description": "NetOps PC Agent - Standalone Version for LAN/USB tethering",
   "main": "index.js",
-  "type": "module",
   "bin": "index.js",
   "scripts": {
     "start": "node index.js",
-    "build:exe": "pkg . --targets node18-win-x64 --output NetOpsAgent.exe"
+    "build:exe": "pkg . --targets node18-win-x64 --output NetOpsAgent.exe --no-bytecode --public --public-packages \"*\""
   },
   "dependencies": {
     "ws": "^8.18.0"

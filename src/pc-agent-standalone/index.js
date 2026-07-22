@@ -9,16 +9,18 @@
  * - 轻量化设计
  */
 
-import http from 'http';
-import { WebSocketServer } from 'ws';
-import os from 'os';
-import { exec } from 'child_process';
-import crypto from 'crypto';
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const os = require('os');
+const { exec, execFile, spawn } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs/promises');
+const path = require('path');
 
 // ==================== 配置 ====================
 const DEFAULT_PORT = 3001;
-const MAX_PORT_ATTEMPTS = 100;
 const TELEMETRY_INTERVAL = 3000;
+const AUTO_START_TASK_NAME = 'NetOps Agent';
 
 // ==================== 全局状态 ====================
 let reportsCache = new Map(); // 内存中的报表缓存
@@ -42,6 +44,29 @@ function runCmd(cmd, timeout = 5000) {
   });
 }
 
+function runProgram(file, args, timeout = 10000) {
+  return new Promise((resolve) => {
+    execFile(file, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 2 }, (error, stdout, stderr) => {
+      resolve({
+        success: !error,
+        stdout: stdout ? stdout.trim() : '',
+        stderr: stderr ? stderr.trim() : '',
+        error: error ? error.message : null
+      });
+    });
+  });
+}
+
+function startDetachedCommand(command) {
+  const commandShell = process.env.ComSpec || 'cmd.exe';
+  const child = spawn(commandShell, ['/d', '/s', '/c', command], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+}
+
 /**
  * 检测管理员权限
  */
@@ -51,8 +76,8 @@ async function checkAdminPrivileges() {
 
   try {
     // 尝试写入需要管理员权限的位置
-    const result = await runCmd('net session 2>&1');
-    return result.success || !result.stdout.includes('Access is denied');
+    const result = await runCmd('net session');
+    return result.success;
   } catch {
     return false;
   }
@@ -106,6 +131,53 @@ async function findAvailablePort(startPort, maxAttempts) {
   return null;
 }
 
+async function configurePrivateFirewallRule(port, hasAdmin) {
+  if (os.platform() !== 'win32' || !hasAdmin) return;
+
+  const result = await runCmd(
+    `netsh advfirewall firewall add rule name="NetOps Agent (${port})" dir=in action=allow protocol=TCP localport=${port} profile=private`
+  );
+  if (!result.success) {
+    console.warn(`[Agent] 无法创建防火墙规则: ${result.stderr || result.error}`);
+  }
+}
+
+async function configureAutoStart(enabled) {
+  if (os.platform() !== 'win32') {
+    throw new Error('开机自启仅支持 Windows。');
+  }
+  if (!process.pkg) {
+    throw new Error('请从已打包的 NetOpsAgent.exe 设置开机自启。');
+  }
+
+  if (!enabled) {
+    const result = await runProgram('schtasks.exe', ['/delete', '/tn', AUTO_START_TASK_NAME, '/f']);
+    if (!result.success && !/cannot find|找不到/i.test(`${result.stderr} ${result.error}`)) {
+      throw new Error(result.stderr || result.error || '无法删除开机任务。');
+    }
+    return { enabled: false, message: '已取消 NetOps Agent 开机自动启动。' };
+  }
+
+  // Task Scheduler starts PowerShell without a visible console, which in turn
+  // launches the standalone agent hidden. This prevents a CMD window at login.
+  const escapedPath = process.execPath.replace(/'/g, "''");
+  const taskCommand = `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '${escapedPath}' -ArgumentList '--background' -WindowStyle Hidden"`;
+  const result = await runProgram('schtasks.exe', [
+    '/create', '/tn', AUTO_START_TASK_NAME, '/tr', taskCommand,
+    '/sc', 'onlogon', '/rl', 'highest', '/f'
+  ]);
+  if (!result.success) {
+    throw new Error(result.stderr || result.error || '无法创建开机任务，请以管理员身份运行 Agent 后重试。');
+  }
+  return { enabled: true, message: '已设置开机自动后台启动；下次 Windows 登录后无需手动打开 Agent。' };
+}
+
+async function getAutoStartStatus() {
+  if (os.platform() !== 'win32') return { enabled: false };
+  const result = await runProgram('schtasks.exe', ['/query', '/tn', AUTO_START_TASK_NAME]);
+  return { enabled: result.success };
+}
+
 // ==================== 系统诊断模块 ====================
 
 async function getCpuUsage() {
@@ -143,26 +215,27 @@ function getMemoryStats() {
 async function getDiskStats() {
   const isWindows = os.platform() === 'win32';
   if (isWindows) {
-    const { stdout } = await runCmd('wmic logicaldisk get Caption,FreeSpace,Size');
-    const lines = stdout.split('\r\n').map(l => l.trim()).filter(Boolean).slice(1);
-    for (const line of lines) {
-      const parts = line.split(/\s+/);
-      if (parts.length >= 3) {
-        const caption = parts[0];
-        const freeSpace = parseInt(parts[1]);
-        const size = parseInt(parts[2]);
-        if (!isNaN(freeSpace) && !isNaN(size) && size > 0) {
-          return {
-            mount: caption,
-            total: size,
-            free: freeSpace,
-            percent: Math.round(((size - freeSpace) / size) * 100)
-          };
-        }
+    // WMIC is removed from current Windows 11 installations. CIM is supported
+    // by both Windows PowerShell and PowerShell 7.
+    const command = 'powershell -NoProfile -Command "Get-CimInstance Win32_LogicalDisk -Filter \\\"DeviceID=\'C:\'\\\" | Select-Object DeviceID,FreeSpace,Size | ConvertTo-Json -Compress"';
+    const { stdout } = await runCmd(command);
+    try {
+      const disk = JSON.parse(stdout);
+      const total = Number(disk.Size);
+      const free = Number(disk.FreeSpace);
+      if (Number.isFinite(total) && Number.isFinite(free) && total > 0) {
+        return {
+          mount: disk.DeviceID || 'C:',
+          total,
+          free,
+          percent: Math.round(((total - free) / total) * 100)
+        };
       }
+    } catch {
+      // Return the explicit unavailable state below; never invent disk values.
     }
   }
-  return { mount: 'C:', total: 100 * 1024 * 1024 * 1024, free: 30 * 1024 * 1024 * 1024, percent: 70 };
+  return { mount: 'C:', total: 0, free: 0, percent: 0, unavailable: true };
 }
 
 async function getAssetSpecs() {
@@ -187,21 +260,54 @@ async function getAssetSpecs() {
 
   let gpuName = 'Standard Video Controller';
   if (os.platform() === 'win32') {
-    const { stdout } = await runCmd('wmic path win32_VideoController get Name /value');
-    const match = stdout.match(/Name=(.+)/i);
-    if (match) gpuName = match[1].trim();
+    const { stdout } = await runCmd('powershell -NoProfile -Command "Get-CimInstance Win32_VideoController | Select-Object -First 1 -ExpandProperty Name"');
+    if (stdout) gpuName = stdout.trim();
   }
 
   return {
     hostname,
     ip,
     mac,
+    osName: os.type(),
+    osRelease: os.release(),
     cpuModel,
     ramTotal,
     diskTotal: disk.total,
     diskFree: disk.free,
     gpuName
   };
+}
+
+async function getInstalledSoftware() {
+  if (os.platform() !== 'win32') return [];
+
+  const command = 'powershell -NoProfile -Command "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*,HKLM:\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName } | Sort-Object DisplayName | Select-Object -First 30 @{Name=\'name\';Expression={$_.DisplayName}},@{Name=\'version\';Expression={$_.DisplayVersion}} | ConvertTo-Json -Compress"';
+  const { stdout } = await runCmd(command, 15000);
+  try {
+    const parsed = JSON.parse(stdout);
+    const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    return list
+      .filter((item) => item?.name)
+      .map((item) => ({ name: String(item.name), version: item.version ? String(item.version) : '-' }));
+  } catch {
+    return [];
+  }
+}
+
+async function getWindowsPatches() {
+  if (os.platform() !== 'win32') return [];
+
+  const command = 'powershell -NoProfile -Command "Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 30 @{Name=\'id\';Expression={$_.HotFixID}},@{Name=\'desc\';Expression={$_.Description}},@{Name=\'date\';Expression={$_.InstalledOn.ToString(\'yyyy-MM-dd\')}} | ConvertTo-Json -Compress"';
+  const { stdout } = await runCmd(command, 15000);
+  try {
+    const parsed = JSON.parse(stdout);
+    const list = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    return list
+      .filter((item) => item?.id)
+      .map((item) => ({ id: String(item.id), desc: item.desc ? String(item.desc) : 'Windows Update', date: item.date ? String(item.date) : '-' }));
+  } catch {
+    return [];
+  }
 }
 
 async function getProcessesList() {
@@ -281,38 +387,72 @@ async function runSystemDiagnostics() {
 async function flushDNS(onProgress) {
   onProgress('正在刷新 DNS 缓存...');
   if (os.platform() === 'win32') {
-    await runCmd('ipconfig /flushdns');
+    const result = await runCmd('ipconfig /flushdns');
+    if (!result.success) throw new Error(result.stderr || result.error || 'DNS 缓存刷新失败。');
   }
   onProgress('DNS 缓存已刷新。');
   return { status: 'success', message: 'DNS 缓存刷新成功。' };
 }
 
+async function registerDNS(onProgress) {
+  onProgress('正在重新注册 DNS...');
+  if (os.platform() === 'win32') {
+    const result = await runCmd('ipconfig /registerdns');
+    if (!result.success) throw new Error(result.stderr || result.error || 'DNS 注册失败。');
+  }
+  onProgress('DNS 注册请求已完成。');
+  return { status: 'success', message: 'DNS 注册请求已完成。' };
+}
+
+async function clearArpCache(onProgress) {
+  onProgress('正在清理 ARP 缓存...');
+  if (os.platform() === 'win32') {
+    const result = await runCmd('arp -d *');
+    if (!result.success) throw new Error(result.stderr || result.error || 'ARP 缓存清理失败。');
+  }
+  onProgress('ARP 缓存已清理。');
+  return { status: 'success', message: 'ARP 缓存已清理。' };
+}
+
 async function cleanTempFiles(onProgress) {
-  onProgress('正在清理临时文件...');
-  const tempDir = os.tmpdir();
+  onProgress('正在清理用户和 C 盘 Windows 临时缓存...');
+  const tempDirs = new Set([os.tmpdir()]);
+  if (os.platform() === 'win32') {
+    tempDirs.add(path.join(process.env.SystemRoot || 'C:\\Windows', 'Temp'));
+  }
   let deletedCount = 0;
 
-  try {
-    const files = await (await import('fs/promises')).readdir(tempDir);
-    for (const file of files.slice(0, 30)) {
-      try {
-        await (await import('fs/promises')).unlink(`${tempDir}/${file}`);
-        deletedCount++;
-      } catch {}
+  for (const tempDir of tempDirs) {
+    try {
+      const files = await fs.readdir(tempDir);
+      for (const file of files) {
+        try {
+          await fs.rm(path.join(tempDir, file), { recursive: true, force: true, maxRetries: 1, retryDelay: 100 });
+          deletedCount++;
+        } catch {
+          // Locked system and application files are intentionally left alone.
+        }
+      }
+    } catch {
+      // The directory may be protected or unavailable; continue with others.
     }
-  } catch {}
+  }
 
-  onProgress(`已清理 ${deletedCount} 个临时文件。`);
-  return { status: 'success', message: `成功清理 ${deletedCount} 个临时文件。` };
+  onProgress(`已清理 ${deletedCount} 个临时缓存项目。`);
+  return { status: 'success', message: `成功清理 ${deletedCount} 个临时缓存项目。` };
 }
 
 async function resetNetworkAdapter(onProgress) {
-  onProgress('正在重置网络适配器...');
+  onProgress('正在重置网络适配器，连接将短暂中断...');
   if (os.platform() === 'win32') {
-    await runCmd('netsh winsock reset');
-    await runCmd('netsh int ip reset');
-    await runCmd('ipconfig /release');
-    await runCmd('ipconfig /renew');
+    const commands = ['netsh winsock reset', 'netsh int ip reset', 'ipconfig /release', 'ipconfig /renew'];
+    for (const command of commands) {
+      try {
+        await runCmd(command, 30000);
+      } catch {
+        // Continue so a later command can still restore connectivity.
+      }
+    }
   }
   onProgress('网络适配器已重置。');
   return { status: 'success', message: '网络适配器重置成功。' };
@@ -321,21 +461,58 @@ async function resetNetworkAdapter(onProgress) {
 async function runSFC(onProgress) {
   onProgress('正在运行系统文件检查器 (SFC)...');
   if (os.platform() === 'win32') {
-    runCmd('sfc /scannow', 60000); // 后台运行
+    startDetachedCommand('sfc /scannow');
   }
-  await new Promise(r => setTimeout(r, 2000));
-  onProgress('SFC 扫描已启动（后台运行）。');
+  onProgress('SFC 扫描已在后台启动，请等待 Windows 完成扫描。');
   return { status: 'success', message: 'SFC 扫描已启动。' };
+}
+
+async function runDismScan(onProgress) {
+  onProgress('正在启动 DISM 映像健康扫描...');
+  if (os.platform() === 'win32') {
+    startDetachedCommand('DISM /Online /Cleanup-Image /ScanHealth');
+  }
+  onProgress('DISM 健康扫描已在后台启动。');
+  return { status: 'success', message: 'DISM 健康扫描已启动。' };
 }
 
 async function runDISM(onProgress) {
   onProgress('正在运行 DISM 组件修复...');
   if (os.platform() === 'win32') {
-    runCmd('DISM /Online /Cleanup-Image /RestoreHealth', 120000); // 后台运行
+    startDetachedCommand('DISM /Online /Cleanup-Image /RestoreHealth');
   }
-  await new Promise(r => setTimeout(r, 2000));
-  onProgress('DISM 修复已启动（后台运行）。');
+  onProgress('DISM 修复已在后台启动，请保持电脑接通电源和网络。');
   return { status: 'success', message: 'DISM 修复已启动。' };
+}
+
+async function runDiskScan(onProgress) {
+  onProgress('正在启动 C: 磁盘联机扫描...');
+  if (os.platform() === 'win32') {
+    startDetachedCommand('chkdsk C: /scan');
+  }
+  onProgress('C: 磁盘扫描已在后台启动。');
+  return { status: 'success', message: 'C: 磁盘扫描已启动。' };
+}
+
+async function controlPower(action, onProgress) {
+  if (os.platform() !== 'win32') {
+    throw new Error('关机和重启仅支持 Windows。');
+  }
+
+  if (action === 'cancel_power') {
+    onProgress('正在取消待执行的关机或重启...');
+    const result = await runCmd('shutdown /a');
+    if (!result.success) throw new Error(result.stderr || '当前没有可取消的关机或重启任务。');
+    return { status: 'success', message: '已取消待执行的关机或重启。' };
+  }
+
+  const isRestart = action === 'restart';
+  const verb = isRestart ? '/r' : '/s';
+  const label = isRestart ? '重启' : '关机';
+  onProgress(`电脑将在 15 秒后${label}，可在倒计时结束前取消。`);
+  const result = await runCmd(`shutdown ${verb} /t 15 /c "NetOps Agent 远程${label}"`);
+  if (!result.success) throw new Error(result.stderr || result.error || `${label}命令执行失败。`);
+  return { status: 'success', message: `电脑将在 15 秒后${label}；可在倒计时结束前点击“取消关机/重启”。` };
 }
 
 async function controlService(serviceName, action, onProgress) {
@@ -421,7 +598,27 @@ async function controlFirewall(action, ruleName, port, onProgress) {
 }
 
 async function executeOneClickRepair(type, onProgress) {
-  if (type === 'network') {
+  if (type === 'cache') {
+    return cleanTempFiles(onProgress);
+  } else if (type === 'dns') {
+    return flushDNS(onProgress);
+  } else if (type === 'register_dns') {
+    return registerDNS(onProgress);
+  } else if (type === 'arp') {
+    return clearArpCache(onProgress);
+  } else if (type === 'ip') {
+    return resetNetworkAdapter(onProgress);
+  } else if (type === 'disk_scan') {
+    return runDiskScan(onProgress);
+  } else if (type === 'sfc') {
+    return runSFC(onProgress);
+  } else if (type === 'dism_scan') {
+    return runDismScan(onProgress);
+  } else if (type === 'dism') {
+    return runDISM(onProgress);
+  } else if (type === 'restart' || type === 'shutdown' || type === 'cancel_power') {
+    return controlPower(type, onProgress);
+  } else if (type === 'network') {
     onProgress('--- 开始一键网络修复 ---');
     await flushDNS(onProgress);
     await cleanTempFiles(onProgress);
@@ -493,12 +690,10 @@ async function startServer() {
     console.log('[Agent] 警告: 未检测到管理员权限，部分功能可能受限。');
   }
 
-  // 查找可用端口
-  const port = await findAvailablePort(DEFAULT_PORT, MAX_PORT_ATTEMPTS);
-  if (!port) {
-    console.error('[Agent] 错误: 无法找到可用端口。');
-    process.exit(1);
-  }
+  // The mobile app discovers only the documented port. Selecting a different
+  // free port makes a healthy agent undiscoverable, so fail clearly instead.
+  const port = DEFAULT_PORT;
+  await configurePrivateFirewallRule(port, hasAdmin);
 
   console.log(`[Agent] NetOps Agent 启动中... 端口: ${port}`);
   console.log(`[Agent] 权限级别: ${hasAdmin ? '管理员' : '标准用户'}`);
@@ -600,8 +795,12 @@ async function startServer() {
             break;
 
           case 'get_assets':
-            const specs = await getAssetSpecs();
-            respond('success', { specs });
+            const [specs, software, patches] = await Promise.all([
+              getAssetSpecs(),
+              getInstalledSoftware(),
+              getWindowsPatches()
+            ]);
+            respond('success', { specs, software, patches });
             break;
 
           case 'get_services':
@@ -661,6 +860,16 @@ async function startServer() {
             });
             break;
 
+          case 'agent_autostart':
+            respond('pending', { message: '正在更新电脑端开机启动设置...' });
+            const autoStartResult = await configureAutoStart(Boolean(params?.enabled));
+            respond('success', autoStartResult);
+            break;
+
+          case 'agent_autostart_status':
+            respond('success', await getAutoStartStatus());
+            break;
+
           default:
             respond('error', null, { code: 'UNKNOWN_ACTION', message: '未知操作' });
         }
@@ -681,9 +890,23 @@ async function startServer() {
     });
   });
 
-  server.listen(port, () => {
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+      console.error(`[Agent] 端口 ${port} 已被占用。请关闭占用该端口的程序后重试。`);
+    } else {
+      console.error('[Agent] 服务器启动失败:', error.message);
+    }
+    process.exit(1);
+  });
+
+  server.listen(port, '0.0.0.0', () => {
     console.log(`[Agent] ✅ 服务器已启动，监听端口 ${port}`);
     console.log(`[Agent] 连接地址: ws://localhost:${port}`);
+    const addresses = Object.values(os.networkInterfaces())
+      .flat()
+      .filter((entry) => entry && entry.family === 'IPv4' && !entry.internal)
+      .map((entry) => `ws://${entry.address}:${port}`);
+    for (const address of addresses) console.log(`[Agent] 手机连接地址: ${address}`);
 
     // 输出端口供 ADB 捕获
     console.log(`[AGENT_PORT]${port}[/AGENT_PORT]`);
@@ -692,10 +915,12 @@ async function startServer() {
 
 // ==================== 主程序入口 ====================
 
-console.log('========================================');
-console.log('  NetOps PC Agent - Standalone v1.0');
-console.log('  零预装版本');
-console.log('========================================');
+if (!process.argv.includes('--background')) {
+  console.log('========================================');
+  console.log('  NetOps PC Agent - Standalone v1.0');
+  console.log('  零预装版本');
+  console.log('========================================');
+}
 
 startServer().catch(err => {
   console.error('[Agent] 启动失败:', err);
