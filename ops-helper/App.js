@@ -12,6 +12,7 @@ import {
   StatusBar,
   FlatList,
   Platform,
+  Modal,
 } from 'react-native';
 import * as Network from 'expo-network';
 import UsbAgentModule from 'usb-agent';
@@ -37,6 +38,17 @@ export default function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(null);
+
+  // 折叠日志与确认弹层
+  const [isLogCollapsed, setIsLogCollapsed] = useState(true);
+  const [confirmModal, setConfirmModal] = useState({
+    visible: false,
+    title: '',
+    message: '',
+    confirmText: '确认执行',
+    isDanger: false,
+    onConfirm: null,
+  });
 
   // Tab 菜单切换: 'assets' | 'monitor' | 'netsec' | 'repairs' | 'remote' | 'inspection'
   const [currentTab, setCurrentTab] = useState('assets');
@@ -420,6 +432,9 @@ export default function App() {
 
   function addLog(text, type = 'system') {
     setLogs(prev => [...prev, { time: getTimestamp(), text, type }]);
+    if (type === 'err' || type === 'prog' || type === 'sent') {
+      setIsLogCollapsed(false);
+    }
   }
 
   function formatBytes(bytes) {
@@ -459,6 +474,51 @@ export default function App() {
     setRunningCmd(true);
     setCmdOutput('命令发送中，等待 Agent 回传...');
     sendRequest('remote_cmd', { cmd: normalizedCommand });
+  }
+  function requestConfirmation({ title, message, confirmText = '确认执行', isDanger = false, onConfirm }) {
+    setConfirmModal({
+      visible: true,
+      title: title || '确认提示',
+      message: message || '是否确认执行此操作？',
+      confirmText,
+      isDanger,
+      onConfirm: () => {
+        setConfirmModal(prev => ({ ...prev, visible: false }));
+        if (onConfirm) onConfirm();
+      }
+    });
+  }
+
+  function runMaintenancePreset(preset) {
+    if (!isConnected || repairExecuting) return;
+    const start = () => {
+      setRepairExecuting(true);
+      setRepairProgressLogs([]);
+      setIsLogCollapsed(false);
+      sendRequest('repair_execute', { action: preset.action });
+    };
+    if (preset.power) {
+      const actionText = preset.power === 'restart' ? '重启' : '关机';
+      requestConfirmation({
+        title: `⚠️ 确认${actionText}目标电脑`,
+        message: `系统将在 15 秒后对目标电脑发出${actionText}指令。\n\n提示：如需撤销，可在倒计时结束前随时点击“取消关机/重启”。`,
+        confirmText: `确认立即${actionText}`,
+        isDanger: true,
+        onConfirm: start
+      });
+      return;
+    }
+    if (preset.reconnects) {
+      requestConfirmation({
+        title: '⚠️ 确认重置 IP 网络适配器',
+        message: '此操作将刷新 Winsock / IP 协议栈并重启网络接口。手机与电脑的连接可能短暂断开，完成后会自动恢复搜寻。',
+        confirmText: '确认重置网络',
+        isDanger: true,
+        onConfirm: start
+      });
+      return;
+    }
+    start();
   }
 
   // 发送指令请求
@@ -610,14 +670,16 @@ export default function App() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" backgroundColor="#0B0F19" translucent={true} />
       
-      {/* 头部Logo及状态 */}
+      {/* 头部Logo及固定电脑信息状态 */}
       <View style={styles.header}>
         <View style={styles.logoRow}>
           <View style={styles.logoDot} />
           <Text style={styles.headerTitle}>Windows 智能运维助手</Text>
         </View>
         <View style={[styles.statusBadge, isConnected ? styles.badgeConnected : styles.badgeDisconnected]}>
-          <Text style={styles.statusText}>{isConnected ? '已连接' : '未连接'}</Text>
+          <Text style={styles.statusText}>
+            {isConnected ? `${assetSpecs?.hostname || '已连通'} (Admin)` : '未连接'}
+          </Text>
         </View>
       </View>
 
@@ -662,6 +724,21 @@ export default function App() {
       </View>
 
       <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent}>
+        
+        {/* 后台持续运行任务卡片 (SFC / DISM / 巡检 / 维护) */}
+        {(repairExecuting || runningCmd || collectingLogs || runningInspection || connecting) && (
+          <View style={styles.activeTaskCard}>
+            <ActivityIndicator size="small" color="#38BDF8" style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.activeTaskTitle}>
+                {connecting ? '🌐 正在搜索并连接 Agent...' : '⚙️ 电脑端后台任务持续执行中...'}
+              </Text>
+              <Text style={styles.activeTaskSub}>
+                命令在电脑后台持续运行，日志会自动同步在下方日志区。
+              </Text>
+            </View>
+          </View>
+        )}
         
         {/* 未连接时的提示卡片 */}
         {!isConnected && (
@@ -1240,27 +1317,79 @@ export default function App() {
           </View>
         )}
 
-        {/* 底部控制台输出 (始终展示) */}
+        {/* 底部控制台输出 (可折叠) */}
         <View style={styles.card}>
           <View style={styles.panelHeader}>
-            <Text style={styles.cardTitle}>终端实时事件日志</Text>
+            <TouchableOpacity 
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }} 
+              onPress={() => setIsLogCollapsed(!isLogCollapsed)}
+            >
+              <Text style={styles.cardTitle}>
+                📋 终端实时事件日志 ({logs.length})
+              </Text>
+              <Text style={{ fontSize: 12, color: '#38BDF8', fontWeight: '700' }}>
+                {isLogCollapsed ? '▼ 展开' : '▲ 折叠'}
+              </Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => setLogs([])}>
               <Text style={styles.clearBtn}>清空</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView
-            style={styles.consoleBox}
-            ref={logScrollRef}
-            onContentSizeChange={() => logScrollRef.current?.scrollToEnd({ animated: true })}
-          >
-            {logs.map((log, index) => (
-              <Text key={index} style={[styles.consoleText, styles[`console_${log.type}`]]}>
-                [{log.time}] {log.text}
+          
+          {isLogCollapsed ? (
+            <TouchableOpacity onPress={() => setIsLogCollapsed(false)} style={{ paddingVertical: 4 }}>
+              <Text style={[styles.consoleText, styles[`console_${logs[logs.length - 1]?.type || 'system'}`]]} numberOfLines={1}>
+                最新: [{logs[logs.length - 1]?.time}] {logs[logs.length - 1]?.text}
               </Text>
-            ))}
-          </ScrollView>
+            </TouchableOpacity>
+          ) : (
+            <ScrollView
+              style={styles.consoleBox}
+              ref={logScrollRef}
+              onContentSizeChange={() => logScrollRef.current?.scrollToEnd({ animated: true })}
+            >
+              {logs.map((log, index) => (
+                <Text key={index} style={[styles.consoleText, styles[`console_${log.type}`]]}>
+                  [{log.time}] {log.text}
+                </Text>
+              ))}
+            </ScrollView>
+          )}
         </View>
       </ScrollView>
+
+      {/* 确认二次操作弹层 Modal */}
+      <Modal
+        visible={confirmModal.visible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setConfirmModal(prev => ({ ...prev, visible: false }))}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={[styles.modalTitle, confirmModal.isDanger && styles.modalTitleDanger]}>
+              {confirmModal.title}
+            </Text>
+            <Text style={styles.modalMessage}>{confirmModal.message}</Text>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnSecondary, { flex: 1, marginRight: 10 }]}
+                onPress={() => setConfirmModal(prev => ({ ...prev, visible: false }))}
+              >
+                <Text style={[styles.btnText, { color: '#F8FAFC' }]}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, confirmModal.isDanger ? styles.btnDanger : styles.btnPrimary, { flex: 1 }]}
+                onPress={confirmModal.onConfirm}
+              >
+                <Text style={[styles.btnText, { color: confirmModal.isDanger ? '#FFF' : '#0B1220' }]}>
+                  {confirmModal.confirmText}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1269,14 +1398,14 @@ function reportStyle(status) {
   return {
     fontSize: 12,
     fontWeight: '700',
-    color: status === '正常' ? '#34D399' : '#F87171'
+    color: status === '正常' ? '#38BDF8' : '#FB7185'
   };
 }
 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#0B0F19',
+    backgroundColor: '#0B1220',
     paddingTop: STATUS_BAR_HEIGHT,
   },
   header: {
@@ -1285,7 +1414,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#0B0F19',
+    backgroundColor: '#0B1220',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.08)',
   },
@@ -1301,7 +1430,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   headerTitle: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '700',
     color: '#F8FAFC',
     letterSpacing: 0.3,
@@ -1312,14 +1441,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   badgeConnected: {
-    backgroundColor: 'rgba(52, 211, 153, 0.15)',
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
     borderWidth: 1,
-    borderColor: '#34D399',
+    borderColor: '#38BDF8',
   },
   badgeDisconnected: {
-    backgroundColor: 'rgba(248, 113, 113, 0.15)',
+    backgroundColor: 'rgba(251, 113, 133, 0.15)',
     borderWidth: 1,
-    borderColor: '#F87171',
+    borderColor: '#FB7185',
   },
   statusText: {
     fontSize: 12,
@@ -1328,7 +1457,7 @@ const styles = StyleSheet.create({
   },
   modeSelector: {
     flexDirection: 'row',
-    backgroundColor: '#0F172A',
+    backgroundColor: '#162235',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.06)',
     padding: 6,
@@ -1355,7 +1484,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   tabBarContainer: {
-    backgroundColor: '#0F172A',
+    backgroundColor: '#162235',
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.06)',
   },
@@ -1382,7 +1511,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   tabButtonTextActive: {
-    color: '#0F172A',
+    color: '#0B1220',
     fontWeight: '700',
   },
   scrollContainer: {
@@ -1393,7 +1522,7 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
   },
   card: {
-    backgroundColor: '#131B2E',
+    backgroundColor: '#162235',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
     borderRadius: 18,
@@ -1403,9 +1532,8 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 14,
     fontWeight: '700',
-    textTransform: 'uppercase',
     color: '#38BDF8',
-    marginBottom: 14,
+    marginBottom: 12,
     letterSpacing: 0.5,
   },
   guideText: {
@@ -1420,7 +1548,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    backgroundColor: '#0B0F19',
+    backgroundColor: '#0B1220',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 12,
@@ -1428,9 +1556,10 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontSize: 14,
     height: 48,
+    fontFamily: MONOSPACE_FONT,
   },
   singleInput: {
-    backgroundColor: '#0B0F19',
+    backgroundColor: '#0B1220',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 12,
@@ -1439,6 +1568,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     height: 48,
     marginBottom: 12,
+    fontFamily: MONOSPACE_FONT,
   },
   presetGrid: {
     flexDirection: 'row',
@@ -1483,7 +1613,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#334155',
   },
   btnDanger: {
-    backgroundColor: '#F87171',
+    backgroundColor: '#FB7185',
   },
   btnOutline: {
     borderWidth: 1,
@@ -1498,12 +1628,12 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   btnText: {
-    color: '#0F172A',
+    color: '#0B1220',
     fontSize: 14,
     fontWeight: '700',
   },
   stepBox: {
-    backgroundColor: '#0B0F19',
+    backgroundColor: '#0B1220',
     borderRadius: 14,
     padding: 14,
     marginBottom: 14,
@@ -1528,9 +1658,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   codeText: {
-    fontFamily: 'monospace',
+    fontFamily: MONOSPACE_FONT,
     fontSize: 12,
-    color: '#34D399',
+    color: '#38BDF8',
   },
   sectionHeader: {
     fontSize: 12,
@@ -1565,7 +1695,7 @@ const styles = StyleSheet.create({
   barContainer: {
     width: '100%',
     height: 8,
-    backgroundColor: '#0F172A',
+    backgroundColor: '#0B1220',
     borderRadius: 4,
     overflow: 'hidden',
     marginBottom: 6,
@@ -1587,12 +1717,13 @@ const styles = StyleSheet.create({
   diskValue: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#34D399',
+    color: '#38BDF8',
   },
   diskDetails: {
     fontSize: 12,
     color: '#64748B',
     marginTop: 4,
+    fontFamily: MONOSPACE_FONT,
   },
   divider: {
     height: 1,
@@ -1612,6 +1743,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#F8FAFC',
     fontWeight: '600',
+    fontFamily: MONOSPACE_FONT,
   },
   btnGrid: {
     flexDirection: 'row',
@@ -1624,7 +1756,7 @@ const styles = StyleSheet.create({
   },
   tabsRow: {
     flexDirection: 'row',
-    backgroundColor: '#0B0F19',
+    backgroundColor: '#0B1220',
     borderRadius: 12,
     padding: 4,
     marginBottom: 14,
@@ -1670,6 +1802,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#F8FAFC',
     fontWeight: '700',
+    fontFamily: MONOSPACE_FONT,
   },
   portsHeader: {
     fontSize: 12,
@@ -1690,19 +1823,20 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   portOpen: {
-    backgroundColor: 'rgba(52, 211, 153, 0.15)',
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
     borderWidth: 1,
-    borderColor: '#34D399',
+    borderColor: '#38BDF8',
   },
   portClosed: {
-    backgroundColor: 'rgba(248, 113, 113, 0.15)',
+    backgroundColor: 'rgba(251, 113, 133, 0.15)',
     borderWidth: 1,
-    borderColor: '#F87171',
+    borderColor: '#FB7185',
   },
   portText: {
     fontSize: 12,
     color: '#F8FAFC',
     fontWeight: '600',
+    fontFamily: MONOSPACE_FONT,
   },
   consoleBox: {
     height: 160,
@@ -1714,7 +1848,7 @@ const styles = StyleSheet.create({
   },
   consoleText: {
     fontSize: 12,
-    fontFamily: 'monospace',
+    fontFamily: MONOSPACE_FONT,
     lineHeight: 18,
     marginBottom: 6,
   },
