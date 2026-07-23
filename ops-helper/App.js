@@ -20,6 +20,8 @@ const AGENT_PORT = 3001;
 const USB_TETHER_DEFAULT_URL = `ws://192.168.42.2:${AGENT_PORT}`;
 const SCAN_TIMEOUT_MS = 1200;
 const SCAN_CONCURRENCY = 12;
+const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 0;
+const MONOSPACE_FONT = Platform.OS === 'ios' ? 'Courier' : 'monospace';
 // USB discovery now uses USB tethering/LAN. Keep the old deployment path
 // inert so an APK without the custom native module can always start.
 const UsbAgentModule = null;
