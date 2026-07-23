@@ -901,12 +901,58 @@ async function startServer() {
 
   server.listen(port, '0.0.0.0', () => {
     console.log(`[Agent] ✅ 服务器已启动，监听端口 ${port}`);
-    console.log(`[Agent] 连接地址: ws://localhost:${port}`);
-    const addresses = Object.values(os.networkInterfaces())
-      .flat()
-      .filter((entry) => entry && entry.family === 'IPv4' && !entry.internal)
-      .map((entry) => `ws://${entry.address}:${port}`);
-    for (const address of addresses) console.log(`[Agent] 手机连接地址: ${address}`);
+    console.log(`[Agent] 本地地址: ws://localhost:${port}`);
+
+    const interfaces = os.networkInterfaces();
+    const wifiLanAddresses = [];
+    const usbTetherAddresses = [];
+    const virtualAddresses = [];
+
+    for (const [name, entries] of Object.entries(interfaces)) {
+      if (!entries) continue;
+      for (const entry of entries) {
+        if (!entry || entry.family !== 'IPv4' || entry.internal) continue;
+        const ip = entry.address;
+        const netName = (name || '').toLowerCase();
+
+        // 过滤 Virtual, WSL, Hyper-V, Docker, VMware 等虚拟网卡
+        const isVirtual = netName.includes('wsl') ||
+                          netName.includes('vethernet') ||
+                          netName.includes('virtual') ||
+                          netName.includes('docker') ||
+                          netName.includes('vmware') ||
+                          ip.startsWith('172.') ||
+                          ip.startsWith('169.254.');
+
+        if (isVirtual) {
+          virtualAddresses.push({ name, ip });
+        } else if (ip.startsWith('192.168.42.') || ip.startsWith('192.168.43.') || ip.startsWith('192.168.49.')) {
+          usbTetherAddresses.push({ name, ip });
+        } else {
+          wifiLanAddresses.push({ name, ip });
+        }
+      }
+    }
+
+    // 优先显示物理 Wi-Fi / 局域网地址
+    if (wifiLanAddresses.length > 0) {
+      for (const item of wifiLanAddresses) {
+        console.log(`[Agent] ⭐【固定推荐 Wi-Fi 局域网地址】: ws://${item.ip}:${port}`);
+      }
+    }
+
+    // 显示 USB 共享网络地址
+    if (usbTetherAddresses.length > 0) {
+      for (const item of usbTetherAddresses) {
+        console.log(`[Agent] 🔌【USB 共享网络地址】: ws://${item.ip}:${port}`);
+      }
+    }
+
+    if (wifiLanAddresses.length === 0 && usbTetherAddresses.length === 0) {
+      for (const item of virtualAddresses) {
+        console.log(`[Agent] 手机连接地址: ws://${item.ip}:${port}`);
+      }
+    }
 
     // 输出端口供 ADB 捕获
     console.log(`[AGENT_PORT]${port}[/AGENT_PORT]`);
