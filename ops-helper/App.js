@@ -383,20 +383,32 @@ export default function App() {
     return result;
   }
 
-  // Scan a bounded number of hosts at a time. The old implementation created
-  // hundreds of simultaneous requests, which Android often throttles or drops.
+  // Scan for active agent across active device subnet and tethering subnets
   async function scanForAgent() {
     addLog('正在查找已运行的电脑端 Agent…', 'system');
     setConnecting(true);
 
     const candidates = new Set();
-    for (const subnet of ['192.168.42', '192.168.43', '192.168.49', '192.168.137']) {
-      for (let host = 2; host <= 16; host += 1) candidates.add(`${subnet}.${host}`);
+
+    // 1. 如果输入框中有用户手动填写的地址，优先加入探测集合
+    const currentInputUrl = connectionMode === 'usb' ? normalizeAgentUrl(usbUrl) : normalizeAgentUrl(url);
+    if (currentInputUrl) {
+      const urlMatch = currentInputUrl.match(/^(wss?:\/\/)([^/:]+)/i);
+      if (urlMatch && urlMatch[2]) candidates.add(urlMatch[2]);
     }
 
+    // 2. 常用安卓 USB 共享网络/热点网段 (包含 .1, .2, .129, .254 等核心网关地址)
+    const tetherSubnets = ['192.168.42', '192.168.43', '192.168.49', '192.168.137', '192.168.8'];
+    const priorityHosts = [1, 2, 3, 4, 5, 6, 7, 8, 100, 101, 129, 130, 254];
+    for (const subnet of tetherSubnets) {
+      for (const host of priorityHosts) candidates.add(`${subnet}.${host}`);
+    }
+
+    // 3. 动态获取手机当前 IP 对应的完整 /24 子网
     try {
       const ip = await Network.getIpAddressAsync();
-      const match = ip.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d{1,3})$/);
+      if (ip) addLog(`手机当前 IP: ${ip}`, 'system');
+      const match = ip ? ip.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d{1,3})$/) : null;
       if (match && ip !== '127.0.0.1' && ip !== '0.0.0.0') {
         const ownHost = Number(match[2]);
         for (let host = 1; host <= 254; host += 1) {
@@ -407,6 +419,7 @@ export default function App() {
       addLog(`未能读取手机网络地址：${error.message || error}`, 'system');
     }
 
+    // 4. 对所有预选项并行探测
     const foundUrl = await findFirstAgent([...candidates]);
     if (foundUrl) {
       addLog(`已发现电脑端 Agent：${foundUrl}，正在连接…`, 'recv');
@@ -414,7 +427,7 @@ export default function App() {
     } else {
       setIsConnected(false);
       setConnecting(false);
-      addLog('未发现电脑端 Agent。请确认电脑已以管理员身份运行 NetOpsAgent.exe，且 USB 共享网络已开启。', 'err');
+      addLog('未发现电脑端 Agent。请确认电脑已运行 NetOpsAgent.exe，且手机已开启 USB 共享网络（或与电脑处于同一 Wi-Fi 局域网）。', 'err');
     }
   }
 
