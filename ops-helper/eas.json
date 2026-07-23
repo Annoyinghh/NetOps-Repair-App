@@ -11,7 +11,8 @@
       "distribution": "internal",
       "credentialsSource": "local",
       "env": {
-        "EAS_SKIP_EXPO_DOCTOR": "1"
+        "EAS_SKIP_EXPO_DOCTOR": "1",
+        "EAS_SKIP_AUTO_FINGERPRINT": "1"
       },
       "android": {
         "buildType": "apk"
