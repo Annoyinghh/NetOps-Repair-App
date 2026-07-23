@@ -758,7 +758,7 @@ export default function App() {
               <View>
                 <View style={styles.stepBox}>
                   <Text style={styles.stepText}>1. 用 USB 数据线将手机连接到电脑。</Text>
-                  <Text style={styles.stepText}>2. 打开手机的【系统设置 -> 移动网络 -> 个人热点】开启 <Text style={styles.boldText}>“USB 共享网络”</Text> (Tethering)。</Text>
+                  <Text style={styles.stepText}>2. 打开手机的【系统设置 → 移动网络 → 个人热点】开启 <Text style={styles.boldText}>“USB 共享网络”</Text> (Tethering)。</Text>
                   <Text style={styles.stepText}>3. 在电脑上以管理员身份运行 NetOpsAgent.exe；首次运行会开放仅限专用网络的 3001 端口。</Text>
                   <Text style={styles.stepText}>4. 点击下方按钮自动查找电脑；若未找到，可填写电脑 USB 网卡地址后连接。</Text>
                 </View>

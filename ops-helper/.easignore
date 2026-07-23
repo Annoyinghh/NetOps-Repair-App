@@ -1,2 +1,9 @@
-# Exclude compiled exe binary from local EAS build zip upload (downloaded in cloud hook instead)
+# Exclude large generated verify folders & gradle caches from EAS upload
+dist/
+dist-android-verify/
+dist-android-verify-no-usb/
+modules/usb-agent/android/.gradle/
+modules/usb-agent/android/build/
+android/.gradle/
+android/build/
 assets/agent/NetOpsAgent.exe
