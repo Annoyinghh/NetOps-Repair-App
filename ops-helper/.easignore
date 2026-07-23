@@ -1,9 +1,14 @@
-# Exclude large generated verify folders & gradle caches from EAS upload
+# EAS ignore
+node_modules/
+.expo/
 dist/
 dist-android-verify/
 dist-android-verify-no-usb/
-modules/usb-agent/android/.gradle/
-modules/usb-agent/android/build/
-android/.gradle/
-android/build/
-assets/agent/NetOpsAgent.exe
+web-build/
+/android
+/ios
+assets/agent/
+assets/tools/
+*.jks
+*.p12
+*.pem

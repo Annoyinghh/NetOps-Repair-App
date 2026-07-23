@@ -17,6 +17,9 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+.gradle/
+**/android/.gradle/
+**/android/build/
 
 # Metro
 .metro-health-check*
@@ -36,9 +39,9 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
-# generated native folders
+# generated top-level native folders
 /ios
 /android
 
-# Standalone binary for USB deployment (downloaded in cloud hook)
+# Standalone binary for USB deployment
 assets/agent/NetOpsAgent.exe

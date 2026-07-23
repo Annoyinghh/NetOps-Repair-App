@@ -1,0 +1,20 @@
+# EAS ignore for multi-folder repo
+node_modules/
+ops-helper/node_modules/
+.expo/
+ops-helper/.expo/
+src/
+sandbox/
+dist/
+ops-helper/dist/
+ops-helper/dist-android-verify/
+ops-helper/dist-android-verify-no-usb/
+android/
+ops-helper/android/
+ios/
+ops-helper/ios/
+ops-helper/assets/agent/
+ops-helper/assets/tools/
+*.jks
+*.p12
+*.pem
