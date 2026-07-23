@@ -695,6 +695,13 @@ async function startServer() {
   const port = DEFAULT_PORT;
   await configurePrivateFirewallRule(port, hasAdmin);
 
+  // 也添加公用网络规则
+  if (os.platform() === 'win32') {
+    await runCmd(
+      `netsh advfirewall firewall add rule name="NetOps Agent (Public ${port})" dir=in action=allow protocol=TCP localport=${port} profile=public`
+    ).catch(() => {});
+  }
+
   console.log(`[Agent] NetOps Agent 启动中... 端口: ${port}`);
   console.log(`[Agent] 权限级别: ${hasAdmin ? '管理员' : '标准用户'}`);
 

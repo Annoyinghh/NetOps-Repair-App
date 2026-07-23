@@ -400,8 +400,8 @@ export default function App() {
     }
 
     // 2. 常用安卓 USB 共享网络/热点网段 (包含 .1, .2, .129, .254 等核心网关地址)
-    const tetherSubnets = ['192.168.42', '192.168.43', '192.168.49', '192.168.137', '192.168.8'];
-    const priorityHosts = [1, 2, 3, 4, 5, 6, 7, 8, 100, 101, 129, 130, 254];
+    const tetherSubnets = ['192.168.42', '192.168.43', '192.168.49', '192.168.137', '192.168.8', '192.168.71', '192.168.99', '198.18'];
+    const priorityHosts = [1, 2, 3, 4, 5, 6, 7, 8, 76, 100, 101, 129, 130, 199, 254];
     for (const subnet of tetherSubnets) {
       for (const host of priorityHosts) candidates.add(`${subnet}.${host}`);
     }
