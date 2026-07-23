@@ -933,7 +933,15 @@ async function startServer() {
 
         if (isVirtual) {
           virtualAddresses.push({ name, ip });
-        } else if (ip.startsWith('192.168.42.') || ip.startsWith('192.168.43.') || ip.startsWith('192.168.49.')) {
+        } else if (
+          ip.startsWith('192.168.42.') ||
+          ip.startsWith('192.168.43.') ||
+          ip.startsWith('192.168.49.') ||
+          ip.startsWith('192.168.137.') ||
+          ip.startsWith('192.168.71.') ||
+          ip.startsWith('192.168.99.') ||
+          ip.startsWith('192.168.8.')
+        ) {
           usbTetherAddresses.push({ name, ip });
         } else {
           wifiLanAddresses.push({ name, ip });

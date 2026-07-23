@@ -36,9 +36,9 @@ const COMMAND_PRESETS = [
 
 export default function App() {
   // 连接状态
-  const [connectionMode, setConnectionMode] = useState('wifi');
+  const [connectionMode, setConnectionMode] = useState('usb');
   const [url, setUrl] = useState('ws://192.168.2.101:3001');
-  const [usbUrl, setUsbUrl] = useState('ws://192.168.2.101:3001');
+  const [usbUrl, setUsbUrl] = useState('ws://192.168.42.1:3001');
   const [isConnected, setIsConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(null);
@@ -132,8 +132,11 @@ export default function App() {
       socket.onopen = () => {
         setIsConnected(true);
         setConnecting(false);
-        setUrl(connectUrl);
-        setUsbUrl(connectUrl);
+        if (connectionMode === 'usb') {
+          setUsbUrl(connectUrl);
+        } else {
+          setUrl(connectUrl);
+        }
         addLog(`已成功连通设备: ${connectUrl}，进入控制大盘。`, 'recv');
         sendRequest('ping');
       };
