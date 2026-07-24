@@ -27,12 +27,6 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "extra": {
-      "eas": {
-        "projectId": "e8a063e4-b010-454d-a3d8-e768ac639b57"
-      }
-    },
-    "owner": "zixuan-xue",
     "plugins": [
       [
         "expo-build-properties",
