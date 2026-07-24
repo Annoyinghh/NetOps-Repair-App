@@ -18,8 +18,8 @@ import * as Network from 'expo-network';
 
 const AGENT_PORT = 3001;
 const USB_TETHER_DEFAULT_URL = `ws://192.168.42.2:${AGENT_PORT}`;
-const SCAN_TIMEOUT_MS = 1200;
-const SCAN_CONCURRENCY = 12;
+const SCAN_TIMEOUT_MS = 1000;
+const SCAN_CONCURRENCY = 60;
 const STATUS_BAR_HEIGHT = Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 0;
 const MONOSPACE_FONT = Platform.OS === 'ios' ? 'Courier' : 'monospace';
 // USB discovery now uses USB tethering/LAN. Keep the old deployment path
@@ -45,6 +45,7 @@ export default function App() {
 
   // 折叠日志与确认弹层
   const [isLogCollapsed, setIsLogCollapsed] = useState(true);
+  const [isLogExpanded, setIsLogExpanded] = useState(false);
   const [confirmModal, setConfirmModal] = useState({
     visible: false,
     title: '',
@@ -402,11 +403,12 @@ export default function App() {
       if (urlMatch && urlMatch[2]) candidates.add(urlMatch[2]);
     }
 
-    // 2. 常用安卓 USB 共享网络/热点网段 (包含 .1, .2, .120, .129, .254 等核心网关与动态分配地址)
-    const tetherSubnets = ['192.168.42', '192.168.43', '192.168.49', '192.168.137', '192.168.8', '192.168.71', '192.168.99', '198.18'];
+    // 2. 常用安卓 USB 共享网络/热点网段 (全量并发遍历 1..254 确保所有电脑 100% 自动发现)
+    const tetherSubnets = ['192.168.42', '192.168.43', '192.168.71', '192.168.72', '192.168.137', '192.168.49', '192.168.8', '192.168.99', '198.18'];
     const priorityHosts = [1, 2, 3, 4, 5, 6, 7, 8, 76, 100, 101, 102, 120, 129, 130, 150, 199, 254];
     for (const subnet of tetherSubnets) {
       for (const host of priorityHosts) candidates.add(`${subnet}.${host}`);
+      for (let host = 1; host <= 254; host += 1) candidates.add(`${subnet}.${host}`);
     }
 
     // 3. 动态获取手机当前 IP 对应的完整 /24 子网
@@ -1328,7 +1330,7 @@ export default function App() {
           </View>
         )}
 
-        {/* 底部控制台输出 (可折叠) */}
+        {/* 底部控制台输出 (可折叠 / 可放大 / 支持嵌套拖动) */}
         <View style={styles.card}>
           <View style={styles.panelHeader}>
             <TouchableOpacity 
@@ -1342,9 +1344,19 @@ export default function App() {
                 {isLogCollapsed ? '▼ 展开' : '▲ 折叠'}
               </Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setLogs([])}>
-              <Text style={styles.clearBtn}>清空</Text>
-            </TouchableOpacity>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              {!isLogCollapsed && (
+                <TouchableOpacity onPress={() => setIsLogExpanded(!isLogExpanded)}>
+                  <Text style={{ fontSize: 12, color: '#38BDF8', fontWeight: '600' }}>
+                    {isLogExpanded ? '📉 缩小' : '📈 放大'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => setLogs([])}>
+                <Text style={styles.clearBtn}>清空</Text>
+              </TouchableOpacity>
+            </View>
           </View>
           
           {isLogCollapsed ? (
@@ -1355,7 +1367,9 @@ export default function App() {
             </TouchableOpacity>
           ) : (
             <ScrollView
-              style={styles.consoleBox}
+              style={[styles.consoleBox, isLogExpanded && { height: 340 }]}
+              nestedScrollEnabled={true}
+              keyboardShouldPersistTaps="handled"
               ref={logScrollRef}
               onContentSizeChange={() => logScrollRef.current?.scrollToEnd({ animated: true })}
             >

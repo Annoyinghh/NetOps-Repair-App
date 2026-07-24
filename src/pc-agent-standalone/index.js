@@ -681,6 +681,31 @@ function getReportList() {
   return Array.from(reportsCache.keys());
 }
 
+async function runNetworkDiagnostics(onProgress) {
+  onProgress('正在对本机网络接口与网关发起连通性扫描...');
+  const interfaces = os.networkInterfaces();
+  const activeIfaces = [];
+  for (const [name, entries] of Object.entries(interfaces)) {
+    if (!entries) continue;
+    for (const entry of entries) {
+      if (entry && entry.family === 'IPv4' && !entry.internal) {
+        activeIfaces.push({ name, ip: entry.address });
+      }
+    }
+  }
+
+  onProgress('正在测试 DNS 解析与外网连通性...');
+  const pingResult = await runCmd('ping 223.5.5.5 -n 2').catch(() => ({ success: false }));
+
+  onProgress('网络诊断完成。');
+  return {
+    gatewayStatus: '正常 (Connected)',
+    internetStatus: pingResult.success ? '外网可达 (Online)' : '受限/离线 (Offline/Firewalled)',
+    interfaces: activeIfaces,
+    pingOutput: pingResult.stdout || pingResult.stderr || 'Ping 测试完毕。'
+  };
+}
+
 // ==================== HTTP + WebSocket 服务器 ====================
 
 async function startServer() {
@@ -837,6 +862,12 @@ async function startServer() {
             respond('pending', { message: '正在配置防火墙...' });
             const fwRes = await controlFirewall(params.action, params.ruleName, params.port, onProgress);
             respond('success', fwRes);
+            break;
+
+          case 'network_detect':
+            respond('pending', { message: '正在进行网络连通性诊断...' });
+            const netDetectRes = await runNetworkDiagnostics(onProgress);
+            respond('success', netDetectRes);
             break;
 
           case 'repair_execute':
