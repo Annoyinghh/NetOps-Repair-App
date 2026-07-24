@@ -1,6 +1,7 @@
 {
   "expo": {
     "name": "Windows 智能运维助手",
+    "owner": "zixuan11xue",
     "slug": "mobile-app",
     "version": "2.0.1",
     "orientation": "portrait",
@@ -36,6 +37,11 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "b82833ed-1087-4ca4-bca8-98d7a958c9c5"
+      }
+    }
   }
 }
