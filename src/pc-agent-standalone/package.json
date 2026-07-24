@@ -9,6 +9,7 @@
     "build:exe": "pkg . --targets node18-win-x64 --output NetOpsAgent.exe --no-bytecode --public --public-packages \"*\""
   },
   "dependencies": {
+    "iconv-lite": "^0.7.3",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -17,7 +18,9 @@
   "pkg": {
     "assets": [],
     "scripts": [],
-    "targets": ["node18-win-x64"],
+    "targets": [
+      "node18-win-x64"
+    ],
     "outputPath": "."
   }
 }
