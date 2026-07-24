@@ -1137,6 +1137,30 @@ export default function App() {
               </TouchableOpacity>
 
               <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, { marginBottom: 12, backgroundColor: '#EC4899' }]}
+                onPress={() => {
+                  setRepairExecuting(true);
+                  setRepairProgressLogs([]);
+                  sendRequest('repair_execute', { action: 'ppt' });
+                }}
+                disabled={!isConnected || repairExecuting}
+              >
+                <Text style={styles.btnText}>📊 一键 PPT / Office 文件打不开修复</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, { marginBottom: 12, backgroundColor: '#10B981' }]}
+                onPress={() => {
+                  setRepairExecuting(true);
+                  setRepairProgressLogs([]);
+                  sendRequest('repair_execute', { action: 'hardware_health' });
+                }}
+                disabled={!isConnected || repairExecuting}
+              >
+                <Text style={styles.btnText}>💻 一键硬件 S.M.A.R.T 健康诊断</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
                 style={[styles.btn, styles.btnPrimary, { marginBottom: 4 }]}
                 onPress={() => {
                   setRepairExecuting(true);
