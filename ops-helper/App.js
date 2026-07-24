@@ -740,7 +740,7 @@ export default function App() {
         </ScrollView>
       </View>
 
-      <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent}>
+      <ScrollView style={styles.scrollContainer} contentContainerStyle={styles.scrollContent} nestedScrollEnabled={true}>
         
         {/* 后台持续运行任务卡片 (SFC / DISM / 巡检 / 维护) */}
         {(repairExecuting || runningCmd || collectingLogs || runningInspection || connecting) && (
@@ -1719,7 +1719,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     textTransform: 'uppercase',
-    color: '#64748B',
+    color: '#94A3B8',
     marginBottom: 10,
     marginLeft: 2,
     letterSpacing: 0.5,
@@ -1797,6 +1797,29 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontWeight: '600',
     fontFamily: MONOSPACE_FONT,
+    flexShrink: 1,
+    textAlign: 'right',
+  },
+  activeTaskCard: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+    alignItems: 'center',
+  },
+  activeTaskTitle: {
+    fontSize: 14,
+    color: '#38BDF8',
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  activeTaskSub: {
+    fontSize: 12,
+    color: '#94A3B8',
+    lineHeight: 18,
   },
   btnGrid: {
     flexDirection: 'row',
