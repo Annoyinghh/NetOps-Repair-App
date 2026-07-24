@@ -38,7 +38,7 @@ export default function App() {
   // 连接状态
   const [connectionMode, setConnectionMode] = useState('usb');
   const [url, setUrl] = useState('ws://192.168.2.101:3001');
-  const [usbUrl, setUsbUrl] = useState('ws://192.168.42.1:3001');
+  const [usbUrl, setUsbUrl] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(null);
@@ -180,8 +180,8 @@ export default function App() {
   // USB mode therefore uses the IP network provided by USB tethering.
   async function usbDeployAgent() {
     const manualUrl = normalizeAgentUrl(usbUrl);
-    if (manualUrl && usbUrl !== USB_TETHER_DEFAULT_URL) {
-      addLog(`正在连接电脑端 Agent：${manualUrl}`, 'system');
+    if (manualUrl) {
+      addLog(`正在连接手动填写的电脑端 Agent：${manualUrl}`, 'system');
       connectToWs(manualUrl);
       return;
     }
@@ -677,6 +677,10 @@ export default function App() {
     setInspectionResult(null);
     setReportsList([]);
     setAutoStartEnabled(null);
+    setRepairExecuting(false);
+    setRunningCmd(false);
+    setCollectingLogs(false);
+    setRunningInspection(false);
   }
 
   return (
