@@ -28,16 +28,33 @@ let uploadsCache = new Map(); // 内存中的上传文件缓存
 
 // ==================== 工具函数 ====================
 
+function decodeOutput(buf) {
+  if (!buf) return '';
+  if (typeof buf === 'string') return buf.trim();
+  if (os.platform() === 'win32') {
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(buf).trim();
+    } catch {
+      try {
+        return new TextDecoder('gbk').decode(buf).trim();
+      } catch {
+        return buf.toString('utf8').trim();
+      }
+    }
+  }
+  return buf.toString('utf8').trim();
+}
+
 /**
  * 执行命令行
  */
 function runCmd(cmd, timeout = 5000) {
   return new Promise((resolve) => {
-    exec(cmd, { timeout, maxBuffer: 1024 * 1024 * 2 }, (error, stdout, stderr) => {
+    exec(cmd, { timeout, maxBuffer: 1024 * 1024 * 2, encoding: 'buffer' }, (error, stdout, stderr) => {
       resolve({
         success: !error,
-        stdout: stdout ? stdout.trim() : '',
-        stderr: stderr ? stderr.trim() : '',
+        stdout: decodeOutput(stdout),
+        stderr: decodeOutput(stderr),
         error: error ? error.message : null
       });
     });
@@ -46,11 +63,11 @@ function runCmd(cmd, timeout = 5000) {
 
 function runProgram(file, args, timeout = 10000) {
   return new Promise((resolve) => {
-    execFile(file, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 2 }, (error, stdout, stderr) => {
+    execFile(file, args, { timeout, windowsHide: true, maxBuffer: 1024 * 1024 * 2, encoding: 'buffer' }, (error, stdout, stderr) => {
       resolve({
         success: !error,
-        stdout: stdout ? stdout.trim() : '',
-        stderr: stderr ? stderr.trim() : '',
+        stdout: decodeOutput(stdout),
+        stderr: decodeOutput(stderr),
         error: error ? error.message : null
       });
     });
