@@ -15,14 +15,17 @@ src/pc-agent/uploads/
 reports/
 uploads/
 
-# Android build outputs and credentials
+# Android build outputs, gradle caches, and executables
 *.jks
 release-key.jks
 credentials.json
 ops-helper/release-key.jks
 ops-helper/credentials.json
-ops-helper/assets/agent/NetOpsAgent.exe
-**/NetOpsAgent.exe
+*.exe
+.gradle/
+**/.gradle/
+build/
+**/build/
 
 # Environment variables
 .env
