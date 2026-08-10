@@ -22,5 +22,9 @@
     "web": "expo start --web",
     "eas-build-post-install": "mkdir -p assets/agent && curl -L -o assets/agent/NetOpsAgent.exe https://raw.githubusercontent.com/Annoyinghh/NetOps-Repair-App/2ef057a071853bf32862470a7e00114d683d488d/mobile-app/assets/agent/NetOpsAgent.exe"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "typescript": "^7.0.2"
+  }
 }
