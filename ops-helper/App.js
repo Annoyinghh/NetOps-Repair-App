@@ -34,14 +34,28 @@ const COMMAND_PRESETS = [
   { label: '磁盘空间', command: 'powershell -NoProfile -Command "Get-Volume | Select-Object DriveLetter,FileSystemLabel,SizeRemaining,Size | Format-Table -AutoSize"' },
 ];
 
+const DEFAULT_BOOKMARKS = [
+  { id: '1', name: '机房 A区-主控机', address: 'ws://192.168.1.100:3001' },
+  { id: '2', name: '机房 B区-应用服务器', address: 'ws://10.0.0.2:3001' },
+  { id: '3', name: '本地工作站 PC', address: 'ws://192.168.2.101:3001' },
+];
+
 export default function App() {
   // 连接状态
-  const [connectionMode, setConnectionMode] = useState('usb');
+  const [connectionMode, setConnectionMode] = useState('wifi');
   const [url, setUrl] = useState('ws://192.168.2.101:3001');
   const [usbUrl, setUsbUrl] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [autoStartEnabled, setAutoStartEnabled] = useState(null);
+
+  // 机房设备管理与全网段扫描状态
+  const [bookmarks, setBookmarks] = useState(DEFAULT_BOOKMARKS);
+  const [discoveredDevices, setDiscoveredDevices] = useState([]);
+  const [isScanningSubnet, setIsScanningSubnet] = useState(false);
+  const [addBookmarkModalVisible, setAddBookmarkModalVisible] = useState(false);
+  const [newBookmarkName, setNewBookmarkName] = useState('');
+  const [newBookmarkAddress, setNewBookmarkAddress] = useState('');
 
   // 折叠日志与确认弹层
   const [isLogCollapsed, setIsLogCollapsed] = useState(true);
@@ -368,7 +382,16 @@ export default function App() {
       });
       if (!response.ok) return null;
       const body = await response.json();
-      return body?.status === 'ok' ? `ws://${host}:${AGENT_PORT}` : null;
+      if (body?.status === 'ok') {
+        return {
+          host,
+          hostname: body.hostname || `主机 (${host})`,
+          hasAdmin: Boolean(body.hasAdmin),
+          uptime: body.uptime,
+          url: `ws://${host}:${AGENT_PORT}`,
+        };
+      }
+      return null;
     } catch {
       return null;
     } finally {
@@ -382,11 +405,95 @@ export default function App() {
     const workers = Array.from({ length: Math.min(SCAN_CONCURRENCY, hosts.length) }, async () => {
       while (!result && nextIndex < hosts.length) {
         const found = await probeAgent(hosts[nextIndex++]);
-        if (found) result = found;
+        if (found && !result) result = found.url;
       }
     });
     await Promise.all(workers);
     return result;
+  }
+
+  async function findAllAgents(hosts) {
+    const found = [];
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(SCAN_CONCURRENCY, hosts.length) }, async () => {
+      while (nextIndex < hosts.length) {
+        const target = hosts[nextIndex++];
+        const res = await probeAgent(target);
+        if (res) found.push(res);
+      }
+    });
+    await Promise.all(workers);
+    return found;
+  }
+
+  // 一键全网段扫描机房与局域网在线设备
+  async function scanSubnetForDevices() {
+    setIsScanningSubnet(true);
+    setDiscoveredDevices([]);
+    addLog('正在全网段并发扫描机房与局域网内的 Windows Agent 主机...', 'system');
+
+    const candidates = new Set();
+    try {
+      const ip = await Network.getIpAddressAsync();
+      if (ip && ip !== '127.0.0.1' && ip !== '0.0.0.0') {
+        addLog(`检测到手机内网 IP: ${ip}，正在扫描同网段 1~254...`, 'system');
+        const match = ip.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d{1,3})$/);
+        if (match) {
+          for (let host = 1; host <= 254; host += 1) {
+            candidates.add(`${match[1]}.${host}`);
+          }
+        }
+      }
+    } catch (e) {
+      addLog(`未能获取手机网络: ${e.message}`, 'system');
+    }
+
+    const commonSubnets = ['192.168.1', '192.168.0', '192.168.2', '10.0.0', '192.168.42', '192.168.43', '192.168.137', '198.18'];
+    for (const sub of commonSubnets) {
+      for (const host of [1, 2, 3, 50, 88, 100, 101, 102, 108, 120, 200, 254]) {
+        candidates.add(`${sub}.${host}`);
+      }
+    }
+
+    const results = await findAllAgents([...candidates]);
+    setIsScanningSubnet(false);
+    setDiscoveredDevices(results);
+
+    if (results.length > 0) {
+      addLog(`✅ 扫描完成！共发现 ${results.length} 台在线机房/局域网设备。`, 'recv');
+    } else {
+      addLog('未在当前网段扫描到在线 Agent。请确认机房电脑已运行 NetOpsAgent.exe，或手动输入 IP 连接。', 'err');
+      Alert.alert('未发现设备', '当前网段未发现运行中的 Agent。请确保机房电脑已启动 NetOpsAgent.exe，或在上方直接输入电脑 IP。');
+    }
+  }
+
+  function addBookmark(name, address) {
+    if (!address) {
+      Alert.alert('提示', '请输入设备地址 (如 ws://192.168.1.100:3001)');
+      return;
+    }
+    const normalized = normalizeAgentUrl(address) || address;
+    const item = {
+      id: Date.now().toString(),
+      name: (name || '').trim() || `机房主机 (${normalized.replace('ws://', '')})`,
+      address: normalized,
+    };
+    setBookmarks(prev => [item, ...prev]);
+    setAddBookmarkModalVisible(false);
+    setNewBookmarkName('');
+    setNewBookmarkAddress('');
+    Alert.alert('保存成功', `已将【${item.name}】添加到机房设备管理列表。`);
+  }
+
+  function deleteBookmark(id) {
+    setBookmarks(prev => prev.filter(b => b.id !== id));
+  }
+
+  function connectToBookmark(bookmark) {
+    setUrl(bookmark.address);
+    setConnectionMode('wifi');
+    addLog(`正在直连机房设备【${bookmark.name}】(${bookmark.address})...`, 'system');
+    connectToWs(bookmark.address);
   }
 
   // Scan for active agent across active device subnet and tethering subnets
@@ -707,7 +814,14 @@ export default function App() {
           onPress={() => !connecting && setConnectionMode('wifi')}
           disabled={isConnected}
         >
-          <Text style={[styles.modeTabText, connectionMode === 'wifi' && styles.modeTabTextActive]}>🌐 Wi-Fi 无线</Text>
+          <Text style={[styles.modeTabText, connectionMode === 'wifi' && styles.modeTabTextActive]}>🌐 机房/局域网</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.modeTab, connectionMode === 'bookmarks' && styles.modeTabActive]}
+          onPress={() => !connecting && setConnectionMode('bookmarks')}
+          disabled={isConnected}
+        >
+          <Text style={[styles.modeTabText, connectionMode === 'bookmarks' && styles.modeTabTextActive]}>📑 机房设备管理</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.modeTab, connectionMode === 'usb' && styles.modeTabActive]}
@@ -760,10 +874,12 @@ export default function App() {
         {/* 未连接时的提示卡片 */}
         {!isConnected && (
           <View style={styles.card}>
-            <Text style={styles.cardTitle}>建立 O&M 客户端隧道</Text>
-            {connectionMode === 'wifi' ? (
+            <Text style={styles.cardTitle}>建立机房运维通信隧道</Text>
+
+            {/* 模式 1: 机房 / Wi-Fi 局域网直连 */}
+            {connectionMode === 'wifi' && (
               <View>
-                <Text style={styles.guideText}>手机需要和电脑连在同一个路由器局域网下：</Text>
+                <Text style={styles.guideText}>直接输入机房电脑 IP/域名，或使用一键全网段扫描：</Text>
                 <View style={styles.connectRow}>
                   <TextInput
                     style={styles.input}
@@ -774,17 +890,132 @@ export default function App() {
                     autoCapitalize="none"
                   />
                   <TouchableOpacity style={[styles.btn, styles.btnPrimary]} onPress={toggleConnection} disabled={connecting}>
-                    {connecting ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnText}>连接</Text>}
+                    {connecting ? <ActivityIndicator size="small" color="#0B1220" /> : <Text style={styles.btnText}>⚡ 连接</Text>}
                   </TouchableOpacity>
                 </View>
+
+                {/* 常用 IP 预设快捷点击 */}
+                <View style={[styles.presetGrid, { marginTop: 12 }]}>
+                  {['ws://192.168.1.100:3001', 'ws://192.168.2.101:3001', 'ws://10.0.0.2:3001', 'ws://127.0.0.1:3001'].map(p => (
+                    <TouchableOpacity
+                      key={p}
+                      style={styles.presetButton}
+                      onPress={() => setUrl(p)}
+                    >
+                      <Text style={styles.presetButtonText}>{p.replace('ws://', '').replace(':3001', '')}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                {/* 一键全网段扫描按钮 */}
+                <TouchableOpacity
+                  style={[styles.btn, styles.btnOutline, { marginTop: 8, flexDirection: 'row', gap: 8 }]}
+                  onPress={scanSubnetForDevices}
+                  disabled={isScanningSubnet || connecting}
+                >
+                  {isScanningSubnet ? <ActivityIndicator size="small" color="#38BDF8" /> : null}
+                  <Text style={styles.btnOutlineText}>
+                    {isScanningSubnet ? '🔍 正在扫描机房全网段...' : '🔍 一键扫描机房/局域网在线设备'}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* 扫描发现的设备列表 */}
+                {discoveredDevices.length > 0 && (
+                  <View style={{ marginTop: 14 }}>
+                    <Text style={[styles.sectionHeader, { color: '#38BDF8', marginBottom: 8 }]}>
+                      ✨ 发现机房在线设备 ({discoveredDevices.length} 台)
+                    </Text>
+                    {discoveredDevices.map((dev, idx) => (
+                      <View key={idx} style={styles.deviceCard}>
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={styles.deviceTitle}>🖥️ {dev.hostname}</Text>
+                            {dev.hasAdmin && (
+                              <View style={styles.badgeAdmin}>
+                                <Text style={styles.badgeAdminText}>Admin</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={styles.deviceAddress}>{dev.url}</Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', gap: 6 }}>
+                          <TouchableOpacity
+                            style={[styles.actionBadge, { backgroundColor: '#38BDF8' }]}
+                            onPress={() => {
+                              setUrl(dev.url);
+                              connectToWs(dev.url);
+                            }}
+                          >
+                            <Text style={styles.actionBadgeText}>直连</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.actionBadge, { backgroundColor: '#334155' }]}
+                            onPress={() => addBookmark(dev.hostname, dev.url)}
+                          >
+                            <Text style={[styles.actionBadgeText, { color: '#F8FAFC' }]}>⭐ 存书签</Text>
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
               </View>
-            ) : (
+            )}
+
+            {/* 模式 2: 机房设备管理 / 书签列表 */}
+            {connectionMode === 'bookmarks' && (
+              <View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                  <Text style={styles.guideText}>已保存的机房主机列表：</Text>
+                  <TouchableOpacity
+                    style={[styles.actionBadge, { backgroundColor: '#38BDF8', paddingHorizontal: 12, paddingVertical: 6 }]}
+                    onPress={() => {
+                      setNewBookmarkName('');
+                      setNewBookmarkAddress(url || 'ws://192.168.1.100:3001');
+                      setAddBookmarkModalVisible(true);
+                    }}
+                  >
+                    <Text style={styles.actionBadgeText}>+ 添加新设备</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {bookmarks.length > 0 ? (
+                  bookmarks.map((bm) => (
+                    <View key={bm.id} style={styles.deviceCard}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.deviceTitle}>🖥️ {bm.name}</Text>
+                        <Text style={styles.deviceAddress}>{bm.address}</Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        <TouchableOpacity
+                          style={[styles.actionBadge, { backgroundColor: '#38BDF8' }]}
+                          onPress={() => connectToBookmark(bm)}
+                        >
+                          <Text style={styles.actionBadgeText}>⚡ 直连</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.actionBadge, { backgroundColor: 'rgba(251, 113, 133, 0.15)', borderWidth: 1, borderColor: '#FB7185' }]}
+                          onPress={() => deleteBookmark(bm.id)}
+                        >
+                          <Text style={[styles.actionBadgeText, { color: '#FB7185' }]}>删除</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.emptyText}>暂未保存任何机房设备书签。点击右上角“+ 添加新设备”保存常用机器。</Text>
+                )}
+              </View>
+            )}
+
+            {/* 模式 3: USB 数据线直连 */}
+            {connectionMode === 'usb' && (
               <View>
                 <View style={styles.stepBox}>
                   <Text style={styles.stepText}>1. 用 USB 数据线将手机连接到电脑。</Text>
-                  <Text style={styles.stepText}>2. 打开手机的【系统设置 → 移动网络 → 个人热点】开启 <Text style={styles.boldText}>“USB 共享网络”</Text> (Tethering)。</Text>
-                  <Text style={styles.stepText}>3. 在电脑上以管理员身份运行 NetOpsAgent.exe；首次运行会开放仅限专用网络的 3001 端口。</Text>
-                  <Text style={styles.stepText}>4. 点击下方按钮自动查找电脑；若未找到，可填写电脑 USB 网卡地址后连接。</Text>
+                  <Text style={styles.stepText}>2. 打开手机【设置 → 个人热点/网络共享】开启 <Text style={styles.boldText}>“USB 网络共享”</Text> (Tethering)。</Text>
+                  <Text style={styles.stepText}>3. 在电脑上运行 NetOpsAgent.exe（首次运行请以管理员身份启动）。</Text>
+                  <Text style={styles.stepText}>4. 点击下方按钮自动发现电脑并一键建立连接。</Text>
                 </View>
                 <TextInput
                   style={styles.input}
@@ -794,9 +1025,9 @@ export default function App() {
                   placeholderTextColor="#64748B"
                   autoCapitalize="none"
                 />
-                <View style={styles.connectRow}>
+                <View style={[styles.connectRow, { marginTop: 10 }]}>
                   <TouchableOpacity style={[styles.btn, styles.btnPrimary, { flex: 1 }]} onPress={toggleConnection} disabled={connecting}>
-                    {connecting ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.btnText}>🔍 自动搜寻并一键连接电脑</Text>}
+                    {connecting ? <ActivityIndicator size="small" color="#0B1220" /> : <Text style={styles.btnText}>🔍 自动搜寻并一键连接电脑</Text>}
                   </TouchableOpacity>
                 </View>
               </View>
@@ -804,16 +1035,29 @@ export default function App() {
           </View>
         )}
 
-        {/* 已连接时展示断开卡片（精简） */}
+        {/* 已连接时展示当前连接详情与快捷存为书签 */}
         {isConnected && (
           <View style={styles.card}>
-            <View style={styles.connectRow}>
-              <Text style={{ flex: 1, color: '#10B981', fontSize: 13, alignSelf: 'center', fontWeight: '600' }}>
-                已通过 {connectionMode === 'usb' ? 'USB 数据线' : 'Wi-Fi'} 成功配对建立连接通道
-              </Text>
-              <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={toggleConnection}>
-                <Text style={styles.btnText}>断开</Text>
-              </TouchableOpacity>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={{ color: '#38BDF8', fontSize: 14, fontWeight: '700' }}>
+                  ✅ 已连通机房主机: {assetSpecs?.hostname || '已连接'}
+                </Text>
+                <Text style={{ color: '#94A3B8', fontSize: 12, marginTop: 2, fontFamily: MONOSPACE_FONT }}>
+                  通道: {url || usbUrl}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  style={[styles.actionBadge, { backgroundColor: '#334155', paddingVertical: 8, paddingHorizontal: 12 }]}
+                  onPress={() => addBookmark(assetSpecs?.hostname || '机房电脑', url || usbUrl)}
+                >
+                  <Text style={[styles.actionBadgeText, { color: '#F8FAFC' }]}>⭐ 存书签</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.btn, styles.btnDanger, { height: 38, paddingHorizontal: 14 }]} onPress={toggleConnection}>
+                  <Text style={[styles.btnText, { fontSize: 12, color: '#FFF' }]}>断开</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
         )}
@@ -1443,6 +1687,52 @@ export default function App() {
           </View>
         </View>
       </Modal>
+
+      {/* 添加机房设备书签 Modal */}
+      <Modal
+        visible={addBookmarkModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setAddBookmarkModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>⭐ 添加机房设备管理书签</Text>
+            <Text style={styles.guideText}>为常用机房电脑/服务器添加快捷直连书签：</Text>
+            
+            <TextInput
+              style={styles.singleInput}
+              value={newBookmarkName}
+              onChangeText={setNewBookmarkName}
+              placeholder="设备备注名称 (例: 3楼机房-数据库服务器)"
+              placeholderTextColor="#64748B"
+            />
+            <TextInput
+              style={styles.singleInput}
+              value={newBookmarkAddress}
+              onChangeText={setNewBookmarkAddress}
+              placeholder="通信通道 (例: ws://192.168.1.100:3001)"
+              placeholderTextColor="#64748B"
+              autoCapitalize="none"
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnSecondary, { flex: 1, marginRight: 10 }]}
+                onPress={() => setAddBookmarkModalVisible(false)}
+              >
+                <Text style={[styles.btnText, { color: '#F8FAFC' }]}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, { flex: 1 }]}
+                onPress={() => addBookmark(newBookmarkName, newBookmarkAddress)}
+              >
+                <Text style={[styles.btnText, { color: '#0B1220' }]}>确认保存</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1528,7 +1818,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(56, 189, 248, 0.4)',
   },
   modeTabText: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#94A3B8',
     fontWeight: '600',
   },
@@ -1685,41 +1975,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-  stepBox: {
-    backgroundColor: '#0B1220',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  stepText: {
-    fontSize: 12,
-    color: '#94A3B8',
-    lineHeight: 20,
-    marginBottom: 8,
-  },
-  boldText: {
-    color: '#F8FAFC',
-    fontWeight: '700',
-  },
-  codeBlock: {
-    backgroundColor: '#1E293B',
-    padding: 8,
-    borderRadius: 8,
-    marginVertical: 6,
-    paddingHorizontal: 12,
-  },
-  codeText: {
-    fontFamily: MONOSPACE_FONT,
-    fontSize: 12,
-    color: '#38BDF8',
-  },
   sectionHeader: {
     fontSize: 12,
     fontWeight: '700',
     textTransform: 'uppercase',
-    color: '#94A3B8',
+    color: '#64748B',
     marginBottom: 10,
     marginLeft: 2,
     letterSpacing: 0.5,
@@ -1797,8 +2057,41 @@ const styles = StyleSheet.create({
     color: '#F8FAFC',
     fontWeight: '600',
     fontFamily: MONOSPACE_FONT,
-    flexShrink: 1,
-    textAlign: 'right',
+  },
+  deviceCard: {
+    backgroundColor: '#0B1220',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  deviceTitle: {
+    fontSize: 13,
+    color: '#F8FAFC',
+    fontWeight: '600',
+  },
+  deviceAddress: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontFamily: MONOSPACE_FONT,
+    marginTop: 2,
+  },
+  badgeAdmin: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  badgeAdminText: {
+    fontSize: 9,
+    color: '#38BDF8',
+    fontWeight: '700',
   },
   activeTaskCard: {
     flexDirection: 'row',
@@ -1821,42 +2114,11 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     lineHeight: 18,
   },
-  btnGrid: {
-    flexDirection: 'row',
-  },
-  repairDesc: {
-    fontSize: 13,
-    color: '#94A3B8',
-    marginBottom: 14,
-    lineHeight: 20,
-  },
-  tabsRow: {
-    flexDirection: 'row',
-    backgroundColor: '#0B1220',
-    borderRadius: 12,
-    padding: 4,
-    marginBottom: 14,
-  },
-  tabActive: {
-    backgroundColor: '#1E293B',
-  },
-  tabText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#64748B',
-  },
-  tabTextActive: {
-    color: '#F8FAFC',
-  },
   panelHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
-  },
-  closeBtn: {
-    fontSize: 22,
-    color: '#94A3B8',
   },
   clearBtn: {
     fontSize: 13,
@@ -1929,10 +2191,10 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   console_system: { color: '#94A3B8' },
-  console_sent: { color: '#60A5FA' },
+  console_sent: { color: '#38BDF8' },
   console_recv: { color: '#34D399' },
-  console_prog: { color: '#FBBF24' },
-  console_err: { color: '#F87171' },
+  console_prog: { color: '#F59E0B' },
+  console_err: { color: '#FB7185' },
   emptyText: {
     fontSize: 13,
     color: '#64748B',
