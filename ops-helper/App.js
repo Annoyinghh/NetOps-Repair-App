@@ -251,10 +251,11 @@ export default function App() {
         setIsConnected(true);
         setConnecting(false);
         addLog(`✅ 通信隧道已建立！成功接入目标主机。`, 'recv');
-        // 获取初始系统信息与自启状态
-        sendWsMsg({ type: 'get_asset_specs' });
-        sendWsMsg({ type: 'get_autostart_status' });
-        sendWsMsg({ type: 'get_processes' });
+        // 主动请求系统诊断、资产和自启状态
+        sendAgentRequest('system_diagnose');
+        sendAgentRequest('get_assets');
+        sendAgentRequest('agent_autostart_status');
+        sendAgentRequest('get_services');
       };
 
       ws.onmessage = (e) => {
@@ -293,57 +294,102 @@ export default function App() {
     addLog('已主动断开当前主机连接。', 'system');
   }
 
-  function sendWsMsg(msg) {
+  function sendAgentRequest(action, params = {}) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       addLog('无法发送指令：尚未连接到电脑端 Agent。', 'err');
       return;
     }
+    const msg = {
+      id: Date.now().toString(),
+      type: 'request',
+      action,
+      params,
+    };
     wsRef.current.send(JSON.stringify(msg));
   }
 
   function handleAgentMessage(data) {
-    switch (data.type) {
-      case 'telemetry':
-        setCpu(data.cpu || 0);
-        setMemory(data.memory || 0);
-        if (data.disk) setDisk(data.disk);
-        if (data.system) {
-          setSysInfo(data.system);
-          setActiveHostInfo(data.system);
+    // 1. 处理 Agent push 的 status_update 实时遥测
+    if (data.type === 'push' && data.event === 'status_update' && data.data) {
+      const stats = data.data;
+      if (stats.cpu !== undefined) {
+        setCpu(typeof stats.cpu === 'number' ? stats.cpu : (stats.cpu?.percent || 0));
+      }
+      if (stats.memory !== undefined) {
+        setMemory(typeof stats.memory === 'number' ? stats.memory : (stats.memory?.percent || 0));
+      }
+      if (stats.disk) {
+        const freeGB = stats.disk.free ? (stats.disk.free / 1024 / 1024 / 1024).toFixed(1) : '0';
+        const totalGB = stats.disk.total ? (stats.disk.total / 1024 / 1024 / 1024).toFixed(1) : '0';
+        setDisk({
+          percent: stats.disk.percent || 0,
+          free: `${freeGB} GB`,
+          total: `${totalGB} GB`,
+          mount: stats.disk.mount || 'C:',
+        });
+      }
+      if (stats.system) {
+        setSysInfo(stats.system);
+        setActiveHostInfo(stats.system);
+      }
+      if (stats.specs) {
+        setAssetSpecs(stats.specs);
+      }
+      return;
+    }
+
+    // 2. 处理 push repair_progress
+    if (data.type === 'push' && data.event === 'repair_progress') {
+      const prog = data.data?.progress || data.data?.message || '';
+      addLog(`[执行进度] ${prog}`, 'prog');
+      return;
+    }
+
+    // 3. 处理 response (通用请求应答)
+    if (data.type === 'response') {
+      if (data.status === 'pending') {
+        addLog(`[已下发] ${data.data?.message || 'Agent 已接收指令，正在执行...'}`, 'sent');
+        return;
+      }
+      if (data.status === 'success') {
+        // 系统诊断数据
+        if (data.data?.system) {
+          setSysInfo(data.data.system);
+          setActiveHostInfo(data.data.system);
         }
-        break;
-      case 'asset_specs':
-        setAssetSpecs(data.specs);
-        break;
-      case 'processes':
-        setProcesses(data.list || []);
-        break;
-      case 'services':
-        setServices(data.list || []);
-        break;
-      case 'port_scan_result':
-        setPortScanResults(data.results || []);
-        break;
-      case 'repair_progress':
-        setRunningTaskName(data.task || '系统维护');
-        addLog(`[${data.task || '任务'}] ${data.message || ''}`, 'prog');
-        break;
-      case 'repair_done':
+        if (data.data?.specs) {
+          setAssetSpecs(data.data.specs);
+        }
+        // 服务列表
+        if (Array.isArray(data.data) && data.data.length > 0 && data.data[0]?.name) {
+          setServices(data.data);
+        }
+        // 命令回显
+        if (data.data?.stdout !== undefined) {
+          const out = data.data.stdout?.trim() || '(无标准输出)';
+          addLog(`[终端回显]\n${out}`, 'recv');
+          if (data.data.stderr?.trim()) {
+            addLog(`[错误输出]\n${data.data.stderr.trim()}`, 'err');
+          }
+          return;
+        }
+        // 开机自启状态
+        if (data.data?.enabled !== undefined) {
+          setAutoStartEnabled(Boolean(data.data.enabled));
+        }
+        // 通用完成消息 (修复完成等)
+        if (data.data?.message) {
+          setRunningTaskName(null);
+          addLog(`✅ ${data.data.message}`, 'recv');
+          Alert.alert('执行完成', data.data.message);
+          return;
+        }
+      } else if (data.status === 'error') {
         setRunningTaskName(null);
-        addLog(`✅ 维护任务已执行完成: ${data.message || '成功'}`, 'recv');
-        Alert.alert('执行完成', data.message || '任务已成功完成。');
-        break;
-      case 'autostart_status':
-        setAutoStartEnabled(Boolean(data.enabled));
-        break;
-      case 'cmd_output':
-        addLog(`[终端] ${data.output || ''}`, 'recv');
-        break;
-      case 'cmd_error':
-        addLog(`[终端报错] ${data.error || ''}`, 'err');
-        break;
-      default:
-        if (data.message) addLog(data.message, 'recv');
+        addLog(`❌ 执行失败: ${data.error?.message || '未知错误'}`, 'err');
+        Alert.alert('执行失败', data.error?.message || '操作未成功。');
+        return;
+      }
     }
   }
 
@@ -391,7 +437,16 @@ export default function App() {
         setRunningTaskName(title);
         setIsLogDrawerOpen(true);
         addLog(`正在向主机下发指令【${title}】...`, 'sent');
-        sendWsMsg({ type: 'start_repair', repairType: type });
+
+        let mappedAction = 'cache';
+        if (type === 'sfc') mappedAction = 'sfc';
+        else if (type === 'dism') mappedAction = 'dism';
+        else if (type === 'network_reset') mappedAction = 'network';
+        else if (type === 'cleanup_temp') mappedAction = 'cache';
+        else if (type === 'restart') mappedAction = 'restart';
+        else if (type === 'shutdown') mappedAction = 'shutdown';
+
+        sendAgentRequest('repair_execute', { action: mappedAction });
       },
     });
   }
@@ -400,7 +455,7 @@ export default function App() {
     if (!customCmd.trim()) return;
     addLog(`> ${customCmd}`, 'sent');
     setIsLogDrawerOpen(true);
-    sendWsMsg({ type: 'run_cmd', cmd: customCmd.trim() });
+    sendAgentRequest('remote_cmd', { cmd: customCmd.trim() });
   }
 
   function killProcess(pid, name) {
@@ -413,7 +468,7 @@ export default function App() {
       onConfirm: () => {
         setConfirmModal(prev => ({ ...prev, visible: false }));
         addLog(`正在强制结束进程: ${name} (PID: ${pid})...`, 'sent');
-        sendWsMsg({ type: 'kill_process', pid });
+        sendAgentRequest('process_kill', { pid });
       },
     });
   }
@@ -555,7 +610,7 @@ export default function App() {
                 {isConnected && (
                   <TouchableOpacity
                     style={styles.smallBadge}
-                    onPress={() => sendWsMsg({ type: 'get_asset_specs' })}
+                    onPress={() => sendAgentRequest('get_assets')}
                   >
                     <Text style={styles.smallBadgeText}>🔄 刷新</Text>
                   </TouchableOpacity>
@@ -600,7 +655,7 @@ export default function App() {
                     style={[styles.btn, autoStartEnabled ? styles.btnDanger : styles.btnPrimary, { height: 38, paddingHorizontal: 14 }]}
                     onPress={() => {
                       const next = !autoStartEnabled;
-                      sendWsMsg({ type: 'set_autostart', enabled: next });
+                      sendAgentRequest('agent_autostart', { enabled: next });
                       setAutoStartEnabled(next);
                       addLog(`已设置开机自启动为: ${next ? '开启' : '关闭'}`, 'sent');
                     }}
@@ -733,7 +788,7 @@ export default function App() {
                       setCustomCmd(p.command);
                       addLog(`> ${p.command}`, 'sent');
                       setIsLogDrawerOpen(true);
-                      sendWsMsg({ type: 'run_cmd', cmd: p.command });
+                      sendAgentRequest('remote_cmd', { cmd: p.command });
                     }}
                   >
                     <Text style={styles.presetChipText}>{p.label}</Text>
@@ -748,7 +803,7 @@ export default function App() {
                 <Text style={styles.cardTitle}>📊 活跃进程管控 (前20项)</Text>
                 <TouchableOpacity
                   style={styles.smallBadge}
-                  onPress={() => sendWsMsg({ type: 'get_processes' })}
+                  onPress={() => sendAgentRequest('remote_cmd', { cmd: 'tasklist' })}
                 >
                   <Text style={styles.smallBadgeText}>🔄 刷新</Text>
                 </TouchableOpacity>
@@ -779,7 +834,7 @@ export default function App() {
                 ))
               ) : (
                 <Text style={styles.emptyText}>
-                  {processes.length === 0 ? '点击右上角“刷新”获取当前电脑进程列表。' : '未搜索到匹配进程。'}
+                  {processes.length === 0 ? '可在上方终端输入 tasklist 或点击快捷指令查看进程。' : '未搜索到匹配进程。'}
                 </Text>
               )}
             </View>
@@ -790,7 +845,7 @@ export default function App() {
                 <Text style={styles.cardTitle}>🔌 关键运维端口放行扫描</Text>
                 <TouchableOpacity
                   style={styles.smallBadge}
-                  onPress={() => sendWsMsg({ type: 'scan_ports' })}
+                  onPress={() => sendAgentRequest('network_detect')}
                 >
                   <Text style={styles.smallBadgeText}>⚡ 扫描端口</Text>
                 </TouchableOpacity>
