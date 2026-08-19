@@ -5,6 +5,8 @@ node_modules/
 # Expo and build caches
 .expo/
 **/.expo/
+.npm-cache/
+**/.npm-cache/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

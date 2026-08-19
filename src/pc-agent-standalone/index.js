@@ -827,6 +827,7 @@ async function startServer() {
         status: 'ok',
         port,
         hasAdmin,
+        hostname: os.hostname(),
         platform: os.platform(),
         uptime: Math.round(os.uptime())
       }));
