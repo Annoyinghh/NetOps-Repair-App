@@ -1087,6 +1087,22 @@ async function startServer() {
       return;
     }
 
+    // 硬件与外设功能完整度体检套件 (Web 版)
+    if (req.url === '/tester' || req.url === '/test' || req.url === '/') {
+      const htmlPath = path.join(__dirname, '..', '..', '硬件全功能体检工具.html');
+      try {
+        if (fsSync.existsSync(htmlPath)) {
+          const content = fsSync.readFileSync(htmlPath, 'utf8');
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(content);
+          return;
+        }
+      } catch {}
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<h1>NetOps Agent Running. Please open 硬件全功能体检工具.html from Desktop.</h1>');
+      return;
+    }
+
     res.writeHead(404);
     res.end('Not Found');
   });

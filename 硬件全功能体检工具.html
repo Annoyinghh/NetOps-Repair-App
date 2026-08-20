@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NetOps 外部硬件与外设功能完整度体检工具</title>
+  <style>
+    :root {
+      --bg: #0A0F1D;
+      --card-bg: #131E32;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --primary: #38BDF8;
+      --primary-hover: #0EA5E9;
+      --success: #10B981;
+      --warning: #F59E0B;
+      --danger: #FB7185;
+      --text: #F8FAFC;
+      --text-muted: #94A3B8;
+      --key-default: #1E293B;
+      --key-active: #38BDF8;
+      --key-tested: #10B981;
+      --key-border: rgba(255, 255, 255, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 顶部导航与操作栏 */
+    header {
+      background: #0F172A;
+      border-bottom: 1px solid var(--card-border);
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .badge-tag {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--primary);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .nav-tabs {
+      display: flex;
+      gap: 8px;
+      background: #070C18;
+      padding: 4px;
+      border-radius: 12px;
+      border: 1px solid var(--card-border);
+    }
+
+    .nav-tab {
+      padding: 8px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s;
+      border: none;
+      background: transparent;
+    }
+
+    .nav-tab.active {
+      background: var(--primary);
+      color: #070C18;
+      box-shadow: 0 2px 10px rgba(56, 189, 248, 0.3);
+    }
+
+    /* 主内容区 */
+    main {
+      flex: 1;
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+
+    /* 卡片体系 */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s;
+    }
+
+    .btn-primary { background: var(--primary); color: #070C18; }
+    .btn-primary:hover { background: var(--primary-hover); }
+    .btn-secondary { background: #1E293B; color: var(--text); border: 1px solid var(--card-border); }
+    .btn-secondary:hover { background: #334155; }
+    .btn-danger { background: rgba(251, 113, 133, 0.15); color: var(--danger); border: 1px solid var(--danger); }
+    .btn-danger:hover { background: var(--danger); color: #FFF; }
+
+    /* ================= 键盘测试专用样式 ================= */
+    .keyboard-stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .stat-badge {
+      background: #0A0F1D;
+      border: 1px solid var(--card-border);
+      padding: 10px 16px;
+      border-radius: 10px;
+      flex: 1;
+      text-align: center;
+    }
+    .stat-badge .num {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--primary);
+    }
+    .stat-badge .lbl {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .keyboard-wrapper {
+      background: #070C18;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      overflow-x: auto;
+    }
+
+    .kb-main, .kb-nav, .kb-numpad {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .kb-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .key {
+      background: var(--key-default);
+      border: 1px solid var(--key-border);
+      border-radius: 6px;
+      height: 44px;
+      min-width: 44px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      color: #CBD5E1;
+      box-shadow: 0 3px 0 #070C18;
+      transition: all 0.1s ease;
+      position: relative;
+    }
+
+    .key .count {
+      font-size: 8px;
+      position: absolute;
+      bottom: 2px;
+      right: 4px;
+      color: #FFF;
+      opacity: 0.8;
+    }
+
+    .key.active {
+      background: var(--key-active) !important;
+      color: #070C18 !important;
+      transform: translateY(2px);
+      box-shadow: 0 1px 0 #070C18 !important;
+    }
+
+    .key.tested {
+      background: var(--key-tested);
+      color: #FFF;
+      border-color: #059669;
+    }
+
+    /* 键位宽度 */
+    .key-w125 { min-width: 55px; }
+    .key-w15 { min-width: 66px; }
+    .key-w175 { min-width: 77px; }
+    .key-w2 { min-width: 88px; }
+    .key-w225 { min-width: 99px; }
+    .key-w275 { min-width: 120px; }
+    .key-space { min-width: 275px; }
+    .key-h2 { height: 94px; }
+
+    /* ================= 音响与音频测试 ================= */
+    .audio-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+    }
+
+    .audio-card {
+      background: #0A0F1D;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .audio-icon {
+      font-size: 36px;
+      margin-bottom: 10px;
+    }
+
+    .audio-card h3 {
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+    .audio-card p {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+
+    .vol-meter {
+      height: 12px;
+      background: #1E293B;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    .vol-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--success);
+      transition: width 0.05s;
+    }
+
+    /* ================= 鼠标与触控测试 ================= */
+    .mouse-track-area {
+      background: #0A0F1D;
+      border: 2px dashed rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      height: 240px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: crosshair;
+      margin-top: 14px;
+      position: relative;
+    }
+
+    .mouse-buttons-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .mouse-btn-box {
+      flex: 1;
+      background: #0A0F1D;
+      border: 1px solid var(--card-border);
+      padding: 14px;
+      border-radius: 10px;
+      text-align: center;
+    }
+    .mouse-btn-box.active {
+      background: rgba(16, 185, 129, 0.2);
+      border-color: var(--success);
+    }
+    .mouse-btn-box .name {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .mouse-btn-box .status {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* ================= 屏幕纯色全屏测试 ================= */
+    .screen-colors-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 12px;
+    }
+
+    .color-block {
+      height: 80px;
+      border-radius: 10px;
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 13px;
+      transition: transform 0.2s;
+    }
+    .color-block:hover {
+      transform: scale(1.03);
+    }
+
+    /* 全屏坏点检测遮罩 */
+    #fullscreen-detector {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+      font-weight: 800;
+      color: rgba(255, 255, 255, 0.7);
+      text-shadow: 0 0 10px rgba(0,0,0,0.8);
+    }
+
+    footer {
+      text-align: center;
+      padding: 16px;
+      color: var(--text-muted);
+      font-size: 12px;
+      border-top: 1px solid var(--card-border);
+      background: #070C18;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand-title">
+      <span>🛠️ NetOps PC 外设与硬件完整度体检套件</span>
+      <span class="badge-tag">免安装单文件版</span>
+    </div>
+    <div class="nav-tabs">
+      <button class="nav-tab active" onclick="switchTab('keyboard')">⌨️ 键盘键位完整度</button>
+      <button class="nav-tab" onclick="switchTab('audio')">🔊 音响左右声道/麦克风</button>
+      <button class="nav-tab" onclick="switchTab('mouse')">🖱️ 鼠标滚轮与点击</button>
+      <button class="nav-tab" onclick="switchTab('screen')">🖥️ 显示屏坏点/纯色</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ================= TAB 1: 键盘完整度测试 ================= -->
+    <div id="tab-keyboard" class="tab-content active">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            ⌨️ 104键标准全键盘键位触发与防冲突矩阵体检
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-secondary" onclick="resetKeyboard()">🔄 重置键位记录</button>
+            <button class="btn btn-primary" onclick="exportKeyboardReport()">📋 导出键位测试报告</button>
+          </div>
+        </div>
+
+        <div class="keyboard-stats">
+          <div class="stat-badge">
+            <div class="num" id="kb-tested-count">0</div>
+            <div class="lbl">已触发正常键位数</div>
+          </div>
+          <div class="stat-badge">
+            <div class="num" id="kb-coverage">0%</div>
+            <div class="lbl">键盘完整度测试进度</div>
+          </div>
+          <div class="stat-badge">
+            <div class="num" id="kb-last-key">无</div>
+            <div class="lbl">最后按下的按键 (Key Code)</div>
+          </div>
+        </div>
+
+        <!-- 键盘物理布局图 -->
+        <div class="keyboard-wrapper">
+          <!-- 主键区 -->
+          <div class="kb-main">
+            <!-- Row 0: Esc + F1-F12 -->
+            <div class="kb-row">
+              <div class="key" data-code="Escape">Esc</div>
+              <div style="width: 20px;"></div>
+              <div class="key" data-code="F1">F1</div>
+              <div class="key" data-code="F2">F2</div>
+              <div class="key" data-code="F3">F3</div>
+              <div class="key" data-code="F4">F4</div>
+              <div style="width: 10px;"></div>
+              <div class="key" data-code="F5">F5</div>
+              <div class="key" data-code="F6">F6</div>
+              <div class="key" data-code="F7">F7</div>
+              <div class="key" data-code="F8">F8</div>
+              <div style="width: 10px;"></div>
+              <div class="key" data-code="F9">F9</div>
+              <div class="key" data-code="F10">F10</div>
+              <div class="key" data-code="F11">F11</div>
+              <div class="key" data-code="F12">F12</div>
+            </div>
+            <!-- Row 1: ` 1-0 - = Backspace -->
+            <div class="kb-row">
+              <div class="key" data-code="Backquote">~ `</div>
+              <div class="key" data-code="Digit1">1</div>
+              <div class="key" data-code="Digit2">2</div>
+              <div class="key" data-code="Digit3">3</div>
+              <div class="key" data-code="Digit4">4</div>
+              <div class="key" data-code="Digit5">5</div>
+              <div class="key" data-code="Digit6">6</div>
+              <div class="key" data-code="Digit7">7</div>
+              <div class="key" data-code="Digit8">8</div>
+              <div class="key" data-code="Digit9">9</div>
+              <div class="key" data-code="Digit0">0</div>
+              <div class="key" data-code="Minus">-</div>
+              <div class="key" data-code="Equal">=</div>
+              <div class="key key-w2" data-code="Backspace">Backspace</div>
+            </div>
+            <!-- Row 2: Tab Q-P [ ] \ -->
+            <div class="kb-row">
+              <div class="key key-w15" data-code="Tab">Tab</div>
+              <div class="key" data-code="KeyQ">Q</div>
+              <div class="key" data-code="KeyW">W</div>
+              <div class="key" data-code="KeyE">E</div>
+              <div class="key" data-code="KeyR">R</div>
+              <div class="key" data-code="KeyT">T</div>
+              <div class="key" data-code="KeyY">Y</div>
+              <div class="key" data-code="KeyU">U</div>
+              <div class="key" data-code="KeyI">I</div>
+              <div class="key" data-code="KeyO">O</div>
+              <div class="key" data-code="KeyP">P</div>
+              <div class="key" data-code="BracketLeft">[</div>
+              <div class="key" data-code="BracketRight">]</div>
+              <div class="key key-w15" data-code="Backslash">\</div>
+            </div>
+            <!-- Row 3: Caps A-L ; ' Enter -->
+            <div class="kb-row">
+              <div class="key key-w175" data-code="CapsLock">Caps Lock</div>
+              <div class="key" data-code="KeyA">A</div>
+              <div class="key" data-code="KeyS">S</div>
+              <div class="key" data-code="KeyD">D</div>
+              <div class="key" data-code="KeyF">F</div>
+              <div class="key" data-code="KeyG">G</div>
+              <div class="key" data-code="KeyH">H</div>
+              <div class="key" data-code="KeyJ">J</div>
+              <div class="key" data-code="KeyK">K</div>
+              <div class="key" data-code="KeyL">L</div>
+              <div class="key" data-code="Semicolon">;</div>
+              <div class="key" data-code="Quote">'</div>
+              <div class="key key-w225" data-code="Enter">Enter</div>
+            </div>
+            <!-- Row 4: Shift Z-M , . / Shift -->
+            <div class="kb-row">
+              <div class="key key-w225" data-code="ShiftLeft">Shift</div>
+              <div class="key" data-code="KeyZ">Z</div>
+              <div class="key" data-code="KeyX">X</div>
+              <div class="key" data-code="KeyC">C</div>
+              <div class="key" data-code="KeyV">V</div>
+              <div class="key" data-code="KeyB">B</div>
+              <div class="key" data-code="KeyN">N</div>
+              <div class="key" data-code="KeyM">M</div>
+              <div class="key" data-code="Comma">,</div>
+              <div class="key" data-code="Period">.</div>
+              <div class="key" data-code="Slash">/</div>
+              <div class="key key-w275" data-code="ShiftRight">Shift</div>
+            </div>
+            <!-- Row 5: Ctrl Win Alt Space Alt Win Menu Ctrl -->
+            <div class="kb-row">
+              <div class="key key-w125" data-code="ControlLeft">Ctrl</div>
+              <div class="key key-w125" data-code="MetaLeft">Win</div>
+              <div class="key key-w125" data-code="AltLeft">Alt</div>
+              <div class="key key-space" data-code="Space">Space</div>
+              <div class="key key-w125" data-code="AltRight">Alt</div>
+              <div class="key key-w125" data-code="MetaRight">Win</div>
+              <div class="key key-w125" data-code="ContextMenu">Menu</div>
+              <div class="key key-w125" data-code="ControlRight">Ctrl</div>
+            </div>
+          </div>
+
+          <!-- 功能与方向键区 -->
+          <div class="kb-nav">
+            <div class="kb-row">
+              <div class="key" data-code="PrintScreen">PrtSc</div>
+              <div class="key" data-code="ScrollLock">ScrLk</div>
+              <div class="key" data-code="Pause">Pause</div>
+            </div>
+            <div class="kb-row">
+              <div class="key" data-code="Insert">Ins</div>
+              <div class="key" data-code="Home">Home</div>
+              <div class="key" data-code="PageUp">PgUp</div>
+            </div>
+            <div class="kb-row">
+              <div class="key" data-code="Delete">Del</div>
+              <div class="key" data-code="End">End</div>
+              <div class="key" data-code="PageDown">PgDn</div>
+            </div>
+            <div style="height: 44px;"></div>
+            <div class="kb-row" style="justify-content: center;">
+              <div class="key" data-code="ArrowUp">↑</div>
+            </div>
+            <div class="kb-row">
+              <div class="key" data-code="ArrowLeft">←</div>
+              <div class="key" data-code="ArrowDown">↓</div>
+              <div class="key" data-code="ArrowRight">→</div>
+            </div>
+          </div>
+
+          <!-- 数字小键盘区 -->
+          <div class="kb-numpad">
+            <div class="kb-row">
+              <div class="key" data-code="NumLock">Num</div>
+              <div class="key" data-code="NumpadDivide">/</div>
+              <div class="key" data-code="NumpadMultiply">*</div>
+              <div class="key" data-code="NumpadSubtract">-</div>
+            </div>
+            <div class="kb-row">
+              <div class="key" data-code="Numpad7">7</div>
+              <div class="key" data-code="Numpad8">8</div>
+              <div class="key" data-code="Numpad9">9</div>
+              <div class="key key-h2" data-code="NumpadAdd" style="grid-row: span 2;">+</div>
+            </div>
+            <div class="kb-row">
+              <div class="key" data-code="Numpad4">4</div>
+              <div class="key" data-code="Numpad5">5</div>
+              <div class="key" data-code="Numpad6">6</div>
+            </div>
+            <div class="kb-row">
+              <div class="key" data-code="Numpad1">1</div>
+              <div class="key" data-code="Numpad2">2</div>
+              <div class="key" data-code="Numpad3">3</div>
+              <div class="key key-h2" data-code="NumpadEnter" style="grid-row: span 2;">↵</div>
+            </div>
+            <div class="kb-row">
+              <div class="key key-w2" data-code="Numpad0">0</div>
+              <div class="key" data-code="NumpadDecimal">.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= TAB 2: 音响与麦克风测试 ================= -->
+    <div id="tab-audio" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🔊 音响、耳机声道与麦克风拾音功能完整度测试</div>
+        </div>
+
+        <div class="audio-grid">
+          <!-- 左声道 -->
+          <div class="audio-card">
+            <div class="audio-icon">🎧⬅️</div>
+            <h3>左声道独占测试</h3>
+            <p>播放仅左耳机/左扬声器发声的标准 440Hz 纯音与人声提示</p>
+            <button class="btn btn-primary" onclick="playChannelTone('left')">▶ 播放左声道声音</button>
+          </div>
+
+          <!-- 右声道 -->
+          <div class="audio-card">
+            <div class="audio-icon">🎧➡️</div>
+            <h3>右声道独占测试</h3>
+            <p>播放仅右耳机/右扬声器发声的标准 880Hz 纯音与人声提示</p>
+            <button class="btn btn-primary" onclick="playChannelTone('right')">▶ 播放右声道声音</button>
+          </div>
+
+          <!-- 双声道环绕 -->
+          <div class="audio-card">
+            <div class="audio-icon">🔊✨</div>
+            <h3>双声道立体环绕声</h3>
+            <p>测试左右声道平衡度与空间立体声分离度</p>
+            <button class="btn btn-secondary" onclick="playStereoSweep()">▶ 播放立体声交替</button>
+          </div>
+
+          <!-- 麦克风拾音与分贝条 -->
+          <div class="audio-card">
+            <div class="audio-icon">🎙️</div>
+            <h3>麦克风拾音与电平响应</h3>
+            <p id="mic-status-text">点击开始测试麦克风拾音完整度</p>
+            <button class="btn btn-primary" id="btn-start-mic" onclick="startMicTest()">🎤 启动麦克风拾音检测</button>
+            <div class="vol-meter">
+              <div class="vol-fill" id="mic-meter-fill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= TAB 3: 鼠标按键与滚轮测试 ================= -->
+    <div id="tab-mouse" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🖱️ 鼠标按键、双击、滚轮加速度与轨迹平滑度测试</div>
+          <button class="btn btn-secondary" onclick="resetMouseStats()">🔄 重置鼠标统计</button>
+        </div>
+
+        <div class="mouse-buttons-row">
+          <div class="mouse-btn-box" id="m-btn-left">
+            <div class="name">左键 (Left)</div>
+            <div class="status" id="m-count-left">点击: 0 次</div>
+          </div>
+          <div class="mouse-btn-box" id="m-btn-middle">
+            <div class="name">滚轮中键 (Middle)</div>
+            <div class="status" id="m-count-middle">点击: 0 次</div>
+          </div>
+          <div class="mouse-btn-box" id="m-btn-right">
+            <div class="name">右键 (Right)</div>
+            <div class="status" id="m-count-right">点击: 0 次</div>
+          </div>
+          <div class="mouse-btn-box" id="m-btn-wheel">
+            <div class="name">滚轮滚动 (Scroll)</div>
+            <div class="status" id="m-count-wheel">滚动值: 0</div>
+          </div>
+        </div>
+
+        <div class="mouse-track-area" id="mouse-test-zone">
+          <div style="font-size: 15px; font-weight: 700; color: #7DD3FC; margin-bottom: 6px;">
+            🎯 在此区域内移动鼠标、点击左右键或滚动滚轮进行测试
+          </div>
+          <div style="font-size: 12px; color: var(--text-muted);" id="mouse-pos-text">
+            实时坐标: (X: 0, Y: 0) · 移动距离: 0 px
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= TAB 4: 屏幕坏点纯色测试 ================= -->
+    <div id="tab-screen" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">🖥️ 显示器纯色坏点、漏光与灰阶渐变体检</div>
+        </div>
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+          点击下方任意纯色块将进入<b>全屏纯色检测模式</b>。全屏状态下可逐像素观察屏幕是否存在亮点、暗点、坏点或四角漏光。点击屏幕或按 ESC 即可退出。
+        </p>
+
+        <div class="screen-colors-grid">
+          <div class="color-block" style="background: #000000; color: #FFF;" onclick="enterFullscreenColor('#000000')">纯黑 (漏光检测)</div>
+          <div class="color-block" style="background: #FFFFFF; color: #000;" onclick="enterFullscreenColor('#FFFFFF')">纯白 (暗点检测)</div>
+          <div class="color-block" style="background: #FF0000; color: #FFF;" onclick="enterFullscreenColor('#FF0000')">纯红 (R像素点)</div>
+          <div class="color-block" style="background: #00FF00; color: #000;" onclick="enterFullscreenColor('#00FF00')">纯绿 (G像素点)</div>
+          <div class="color-block" style="background: #0000FF; color: #FFF;" onclick="enterFullscreenColor('#0000FF')">纯蓝 (B像素点)</div>
+          <div class="color-block" style="background: #FFFF00; color: #000;" onclick="enterFullscreenColor('#FFFF00')">纯黄</div>
+          <div class="color-block" style="background: #00FFFF; color: #000;" onclick="enterFullscreenColor('#00FFFF')">纯青</div>
+          <div class="color-block" style="background: #FF00FF; color: #FFF;" onclick="enterFullscreenColor('#FF00FF')">洋红</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- 全屏坏点测试全屏层 -->
+  <div id="fullscreen-detector" onclick="exitFullscreenColor()">
+    点击任意处退出全屏纯色模式 (ESC)
+  </div>
+
+  <footer>
+    NetOps 智能运维中枢 · 硬件功能完整度诊断引擎 · 零外部依赖单文件运行
+  </footer>
+
+  <script>
+    // ================= 1. TAB 切换 =================
+    function switchTab(tabId) {
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      
+      const btn = Array.from(document.querySelectorAll('.nav-tab')).find(b => b.getAttribute('onclick').includes(tabId));
+      if (btn) btn.classList.add('active');
+
+      const target = document.getElementById(`tab-${tabId}`);
+      if (target) target.classList.add('active');
+    }
+
+    // ================= 2. 键盘测试核心逻辑 =================
+    const testedKeys = new Set();
+    const keyHitCounts = new Map();
+    const totalKeys = document.querySelectorAll('.key').length;
+
+    window.addEventListener('keydown', (e) => {
+      // 阻止浏览器默认快捷键干扰测试 (如 F1, Tab, Alt 等)
+      if (['Tab', 'AltLeft', 'AltRight', 'F1', 'F3', 'F5', 'F6', 'F7', 'F11', 'ContextMenu'].includes(e.code)) {
+        e.preventDefault();
+      }
+
+      const keyEl = document.querySelector(`.key[data-code="${e.code}"]`);
+      if (keyEl) {
+        keyEl.classList.add('active');
+        keyEl.classList.add('tested');
+        testedKeys.add(e.code);
+
+        const count = (keyHitCounts.get(e.code) || 0) + 1;
+        keyHitCounts.set(e.code, count);
+        
+        let countEl = keyEl.querySelector('.count');
+        if (!countEl) {
+          countEl = document.createElement('span');
+          countEl.className = 'count';
+          keyEl.appendChild(countEl);
+        }
+        countEl.textContent = count > 1 ? count : '';
+
+        updateKeyboardStats(e.code);
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const keyEl = document.querySelector(`.key[data-code="${e.code}"]`);
+      if (keyEl) {
+        keyEl.classList.remove('active');
+      }
+    });
+
+    function updateKeyboardStats(lastCode) {
+      document.getElementById('kb-tested-count').textContent = testedKeys.size;
+      const pct = Math.round((testedKeys.size / totalKeys) * 100);
+      document.getElementById('kb-coverage').textContent = `${pct}%`;
+      document.getElementById('kb-last-key').textContent = lastCode || '无';
+    }
+
+    function resetKeyboard() {
+      testedKeys.clear();
+      keyHitCounts.clear();
+      document.querySelectorAll('.key').forEach(k => {
+        k.classList.remove('active', 'tested');
+        const c = k.querySelector('.count');
+        if (c) c.remove();
+      });
+      updateKeyboardStats('已重置');
+    }
+
+    function exportKeyboardReport() {
+      const total = totalKeys;
+      const tested = testedKeys.size;
+      const pct = Math.round((tested / total) * 100);
+      const report = `========================================\n` +
+                     `NetOps 键盘硬件功能完整度测试报告\n` +
+                     `测试时间: ${new Date().toLocaleString()}\n` +
+                     `总键位数: ${total} 键\n` +
+                     `已触发有效键位: ${tested} 键\n` +
+                     `键盘功能完整度: ${pct}%\n` +
+                     `========================================\n` +
+                     `已触发键位列表:\n${Array.from(testedKeys).join(', ')}`;
+      alert(report);
+    }
+
+    // ================= 3. 音响与音频测试 =================
+    let audioCtx = null;
+
+    function getAudioContext() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      return audioCtx;
+    }
+
+    function playChannelTone(channel) {
+      const ctx = getAudioContext();
+      const osc = ctx.createOscillator();
+      const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(channel === 'left' ? 440 : 880, ctx.currentTime);
+
+      if (panner) {
+        panner.pan.value = (channel === 'left' ? -1 : 1);
+        osc.connect(panner);
+        panner.connect(gain);
+      } else {
+        osc.connect(gain);
+      }
+
+      gain.connect(ctx.destination);
+      gain.gain.setValueAtTime(0.5, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.2);
+
+      osc.start();
+      osc.stop(ctx.currentTime + 1.2);
+    }
+
+    function playStereoSweep() {
+      playChannelTone('left');
+      setTimeout(() => playChannelTone('right'), 700);
+    }
+
+    // 麦克风实时拾音与分贝条
+    let micStream = null;
+    async function startMicTest() {
+      const btn = document.getElementById('btn-start-mic');
+      const statusText = document.getElementById('mic-status-text');
+      const meterFill = document.getElementById('mic-meter-fill');
+
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const ctx = getAudioContext();
+        const source = ctx.createMediaStreamSource(micStream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        btn.textContent = '🟢 麦克风已开启 (拾音中)';
+        btn.style.background = '#10B981';
+        statusText.textContent = '请对着麦克风说话，下方绿条会实时跳动';
+
+        function updateVolume() {
+          if (!micStream) return;
+          analyser.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            sum += dataArray[i];
+          }
+          const avg = sum / dataArray.length;
+          const volPct = Math.min(100, Math.round((avg / 128) * 100));
+          meterFill.style.width = `${volPct}%`;
+          requestAnimationFrame(updateVolume);
+        }
+        updateVolume();
+      } catch (err) {
+        statusText.textContent = '❌ 无法访问麦克风: ' + err.message;
+        btn.textContent = '❌ 麦克风未授权或不存在';
+      }
+    }
+
+    // ================= 4. 鼠标测试 =================
+    let mouseCounts = { left: 0, middle: 0, right: 0, wheel: 0 };
+    let lastX = 0, lastY = 0, totalDist = 0;
+    const testZone = document.getElementById('mouse-test-zone');
+
+    testZone.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      if (e.button === 0) {
+        mouseCounts.left++;
+        document.getElementById('m-count-left').textContent = `点击: ${mouseCounts.left} 次`;
+        flashMouseBox('m-btn-left');
+      } else if (e.button === 1) {
+        mouseCounts.middle++;
+        document.getElementById('m-count-middle').textContent = `点击: ${mouseCounts.middle} 次`;
+        flashMouseBox('m-btn-middle');
+      } else if (e.button === 2) {
+        mouseCounts.right++;
+        document.getElementById('m-count-right').textContent = `点击: ${mouseCounts.right} 次`;
+        flashMouseBox('m-btn-right');
+      }
+    });
+
+    testZone.addEventListener('contextmenu', e => e.preventDefault());
+
+    testZone.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      mouseCounts.wheel += Math.abs(Math.round(e.deltaY));
+      document.getElementById('m-count-wheel').textContent = `滚动量: ${mouseCounts.wheel}`;
+      flashMouseBox('m-btn-wheel');
+    });
+
+    testZone.addEventListener('mousemove', (e) => {
+      const rect = testZone.getBoundingClientRect();
+      const x = Math.round(e.clientX - rect.left);
+      const y = Math.round(e.clientY - rect.top);
+      if (lastX !== 0 || lastY !== 0) {
+        totalDist += Math.round(Math.hypot(x - lastX, y - lastY));
+      }
+      lastX = x;
+      lastY = y;
+      document.getElementById('mouse-pos-text').textContent = `实时坐标: (X: ${x}, Y: ${y}) · 累计移动距离: ${totalDist} px`;
+    });
+
+    function flashMouseBox(id) {
+      const box = document.getElementById(id);
+      if (box) {
+        box.classList.add('active');
+        setTimeout(() => box.classList.remove('active'), 200);
+      }
+    }
+
+    function resetMouseStats() {
+      mouseCounts = { left: 0, middle: 0, right: 0, wheel: 0 };
+      totalDist = 0;
+      lastX = 0;
+      lastY = 0;
+      document.getElementById('m-count-left').textContent = `点击: 0 次`;
+      document.getElementById('m-count-middle').textContent = `点击: 0 次`;
+      document.getElementById('m-count-right').textContent = `点击: 0 次`;
+      document.getElementById('m-count-wheel').textContent = `滚动量: 0`;
+      document.getElementById('mouse-pos-text').textContent = `实时坐标: (X: 0, Y: 0) · 累计移动距离: 0 px`;
+    }
+
+    // ================= 5. 屏幕坏点纯色测试 =================
+    const fullscreenDiv = document.getElementById('fullscreen-detector');
+
+    function enterFullscreenColor(color) {
+      fullscreenDiv.style.backgroundColor = color;
+      fullscreenDiv.style.display = 'flex';
+      if (fullscreenDiv.requestFullscreen) {
+        fullscreenDiv.requestFullscreen().catch(() => {});
+      }
+    }
+
+    function exitFullscreenColor() {
+      fullscreenDiv.style.display = 'none';
+      if (document.fullscreenElement && document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && fullscreenDiv.style.display === 'flex') {
+        exitFullscreenColor();
+      }
+    });
+  </script>
+</body>
+</html>
