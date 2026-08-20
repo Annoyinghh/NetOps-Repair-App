@@ -165,36 +165,79 @@ async function configureAutoStart(enabled) {
   if (os.platform() !== 'win32') {
     throw new Error('开机自启仅支持 Windows。');
   }
-  if (!process.pkg) {
-    throw new Error('请从已打包的 NetOpsAgent.exe 设置开机自启。');
-  }
+
+  const exePath = process.execPath;
+  const regKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+  const regValueName = 'NetOpsAgent';
 
   if (!enabled) {
-    const result = await runProgram('schtasks.exe', ['/delete', '/tn', AUTO_START_TASK_NAME, '/f']);
-    if (!result.success && !/cannot find|找不到/i.test(`${result.stderr} ${result.error}`)) {
-      throw new Error(result.stderr || result.error || '无法删除开机任务。');
-    }
-    return { enabled: false, message: '已取消 NetOps Agent 开机自动启动。' };
+    // 1. 删除计划任务
+    await runProgram('schtasks.exe', ['/delete', '/tn', AUTO_START_TASK_NAME, '/f']).catch(() => {});
+    // 2. 删除 HKCU 注册表自启项 (无需管理员权限)
+    await runProgram('reg.exe', ['delete', regKey, '/v', regValueName, '/f']).catch(() => {});
+    // 3. 删除 Startup 快捷方式
+    try {
+      const startupShortcut = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'NetOpsAgent.lnk');
+      if (fsSync.existsSync(startupShortcut)) {
+        fsSync.unlinkSync(startupShortcut);
+      }
+    } catch {}
+    return { enabled: false, message: '已成功取消 NetOps Agent 开机自动启动。' };
   }
 
-  // Task Scheduler starts PowerShell without a visible console, which in turn
-  // launches the standalone agent hidden. This prevents a CMD window at login.
-  const escapedPath = process.execPath.replace(/'/g, "''");
-  const taskCommand = `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '${escapedPath}' -ArgumentList '--background' -WindowStyle Hidden"`;
-  const result = await runProgram('schtasks.exe', [
-    '/create', '/tn', AUTO_START_TASK_NAME, '/tr', taskCommand,
-    '/sc', 'onlogon', '/rl', 'highest', '/f'
-  ]);
-  if (!result.success) {
-    throw new Error(result.stderr || result.error || '无法创建开机任务，请以管理员身份运行 Agent 后重试。');
+  // 开启自启策略：多级保底机制 (计划任务 -> 注册表 Run -> Startup 启动文件夹)
+  let success = false;
+
+  // 策略 1: 尝试计划任务 (若有管理员权限则注册)
+  try {
+    const escapedPath = exePath.replace(/'/g, "''");
+    const taskCommand = `powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath '${escapedPath}' -ArgumentList '--background' -WindowStyle Hidden"`;
+    const result = await runProgram('schtasks.exe', [
+      '/create', '/tn', AUTO_START_TASK_NAME, '/tr', taskCommand,
+      '/sc', 'onlogon', '/f'
+    ]);
+    if (result.success) {
+      success = true;
+    }
+  } catch {}
+
+  // 策略 2: HKCU 注册表 Run 项 (无需管理员权限，极度稳定)
+  try {
+    const cmdVal = `"${exePath}" --background`;
+    const regResult = await runProgram('reg.exe', ['add', regKey, '/v', regValueName, '/t', 'REG_SZ', '/d', cmdVal, '/f']);
+    if (regResult.success) {
+      success = true;
+    }
+  } catch {}
+
+  // 策略 3: 用户 Startup 启动快捷方式 (保底)
+  try {
+    const psCmd = `$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\NetOpsAgent.lnk"); $s.TargetPath = '${exePath.replace(/'/g, "''")}'; $s.Arguments = '--background'; $s.WindowStyle = 7; $s.Save()`;
+    await runCmd(`powershell -NoProfile -Command "${psCmd}"`);
+    success = true;
+  } catch {}
+
+  if (!success) {
+    throw new Error('设置开机自启失败，请检查系统权限。');
   }
-  return { enabled: true, message: '已设置开机自动后台启动；下次 Windows 登录后无需手动打开 Agent。' };
+
+  return { enabled: true, message: '已成功开启开机自动常驻！下次开机将自动静默运行 Agent。' };
 }
 
 async function getAutoStartStatus() {
   if (os.platform() !== 'win32') return { enabled: false };
-  const result = await runProgram('schtasks.exe', ['/query', '/tn', AUTO_START_TASK_NAME]);
-  return { enabled: result.success };
+  // 检查计划任务
+  const taskRes = await runProgram('schtasks.exe', ['/query', '/tn', AUTO_START_TASK_NAME]);
+  if (taskRes.success) return { enabled: true };
+  // 检查注册表
+  const regRes = await runProgram('reg.exe', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'NetOpsAgent']);
+  if (regRes.success) return { enabled: true };
+  // 检查 Startup 文件夹
+  try {
+    const startupShortcut = path.join(process.env.APPDATA || '', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'NetOpsAgent.lnk');
+    if (fsSync.existsSync(startupShortcut)) return { enabled: true };
+  } catch {}
+  return { enabled: false };
 }
 
 // ==================== 系统诊断模块 ====================
