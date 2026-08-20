@@ -1,0 +1,39 @@
+name: Build and Release NetOps Agent
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-agent:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies & Build NetOpsAgent.exe
+        working-directory: ./src/pc-agent-standalone
+        run: |
+          npm ci
+          npm run build:exe
+
+      - name: Create Release and Upload Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./src/pc-agent-standalone/NetOpsAgent.exe
+          tag_name: ${{ github.ref_name || 'v2.1.0' }}
+          name: NetOps Agent ${{ github.ref_name || 'v2.1.0' }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
