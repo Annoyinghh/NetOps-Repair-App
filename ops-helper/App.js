@@ -62,13 +62,15 @@ export default function App() {
   const [isLogDrawerOpen, setIsLogDrawerOpen] = useState(false);
   const [runningTaskName, setRunningTaskName] = useState(null);
 
-  // 遥测数据
+  // 遥测数据与系统体检
   const [cpu, setCpu] = useState(0);
   const [memory, setMemory] = useState(0);
   const [disk, setDisk] = useState({ percent: 0, free: '0 GB', total: '0 GB', mount: 'C:' });
   const [sysInfo, setSysInfo] = useState({ platform: '-', release: '-', uptime: '-' });
   const [assetSpecs, setAssetSpecs] = useState(null);
   const [autoStartEnabled, setAutoStartEnabled] = useState(null);
+  const [healthReport, setHealthReport] = useState(null);
+  const [isCheckingHealth, setIsCheckingHealth] = useState(false);
 
   // 进程与服务
   const [processes, setProcesses] = useState([]);
@@ -308,6 +310,18 @@ export default function App() {
     wsRef.current.send(JSON.stringify(msg));
   }
 
+  function triggerHealthCheck() {
+    if (!isConnected) {
+      Alert.alert('未连接', '请先连通电脑端 Agent 后再进行健康体检。');
+      return;
+    }
+    setIsCheckingHealth(true);
+    setRunningTaskName('一键健康度全面体检');
+    setIsLogDrawerOpen(true);
+    addLog('🏥 正在向主机下发【一键系统全面健康体检】指令...', 'sent');
+    sendAgentRequest('health_check');
+  }
+
   function handleAgentMessage(data) {
     // 1. 处理 Agent push 的 status_update 实时遥测
     if (data.type === 'push' && data.event === 'status_update' && data.data) {
@@ -352,6 +366,15 @@ export default function App() {
         return;
       }
       if (data.status === 'success') {
+        // 体检报告响应
+        if (data.data?.score !== undefined) {
+          setHealthReport(data.data);
+          setIsCheckingHealth(false);
+          setRunningTaskName(null);
+          addLog(`🏥 体检完成！综合健康评分: ${data.data.score} 分 (${data.data.grade || '正常'})`, 'recv');
+          Alert.alert('体检完成', `主机综合健康评分：${data.data.score} 分 (${data.data.grade || '良好'})\n${data.data.summary || ''}`);
+          return;
+        }
         // 系统诊断数据
         if (data.data?.system) {
           setSysInfo(data.data.system);
@@ -380,12 +403,14 @@ export default function App() {
         // 通用完成消息 (修复完成等)
         if (data.data?.message) {
           setRunningTaskName(null);
+          setIsCheckingHealth(false);
           addLog(`✅ ${data.data.message}`, 'recv');
           Alert.alert('执行完成', data.data.message);
           return;
         }
       } else if (data.status === 'error') {
         setRunningTaskName(null);
+        setIsCheckingHealth(false);
         addLog(`❌ 执行失败: ${data.error?.message || '未知错误'}`, 'err');
         Alert.alert('执行失败', data.error?.message || '操作未成功。');
         return;
@@ -610,7 +635,10 @@ export default function App() {
                 {isConnected && (
                   <TouchableOpacity
                     style={styles.smallBadge}
-                    onPress={() => sendAgentRequest('get_assets')}
+                    onPress={() => {
+                      sendAgentRequest('get_assets');
+                      sendAgentRequest('system_diagnose');
+                    }}
                   >
                     <Text style={styles.smallBadgeText}>🔄 刷新</Text>
                   </TouchableOpacity>
@@ -623,19 +651,23 @@ export default function App() {
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>操作系统</Text>
-                <Text style={styles.infoVal}>{sysInfo.platform} {sysInfo.release}</Text>
+                <Text style={styles.infoVal}>
+                  {sysInfo?.osDisplayName || assetSpecs?.osDisplayName || (sysInfo?.platform === 'win32' ? `Windows (Build ${sysInfo?.release || '11/10'})` : `${sysInfo?.platform || '-'} ${sysInfo?.release || ''}`.trim())}
+                </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>处理器架构</Text>
-                <Text style={styles.infoVal}>{assetSpecs?.cpuModel || '-'}</Text>
+                <Text style={styles.infoVal}>{assetSpecs?.cpuModel || sysInfo?.cpuModel || '-'}</Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>物理内存</Text>
-                <Text style={styles.infoVal}>{assetSpecs?.memoryGB ? `${assetSpecs.memoryGB} GB` : '-'}</Text>
+                <Text style={styles.infoVal}>
+                  {assetSpecs?.memoryGB ? `${assetSpecs.memoryGB} GB` : (assetSpecs?.ramTotal ? `${Math.round(assetSpecs.ramTotal / (1024 * 1024 * 1024))} GB` : (memory > 0 ? '已就绪' : '-'))}
+                </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>系统运行时间</Text>
-                <Text style={styles.infoVal}>{sysInfo.uptime}</Text>
+                <Text style={styles.infoVal}>{sysInfo?.uptime || sysInfo?.uptimeFormatted || activeHostInfo?.uptime || '-'}</Text>
               </View>
             </View>
 
@@ -671,6 +703,90 @@ export default function App() {
         {/* ========== TAB 2: 一键维护 (REPAIRS) ========== */}
         {currentTab === 'repairs' && (
           <View>
+            {/* 🏥 核心模块：一键系统健康度全身体检与智能评分 */}
+            <View style={styles.healthHeroCard}>
+              <View style={styles.healthHeroHeader}>
+                <View style={{ flex: 1, marginRight: 12 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#F8FAFC' }}>
+                      🏥 主机健康度全身体检
+                    </Text>
+                    {healthReport?.grade && (
+                      <View style={[styles.healthGradeBadge, { backgroundColor: healthReport.gradeColor || '#10B981' }]}>
+                        <Text style={styles.healthGradeBadgeText}>{healthReport.grade}</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={styles.healthHeroSub}>
+                    {healthReport ? healthReport.summary : '一键全面扫描物理硬盘 S.M.A.R.T、组件健康度、内存负荷与网络。'}
+                  </Text>
+                  {healthReport?.timestamp && (
+                    <Text style={{ fontSize: 11, color: '#64748B', marginTop: 4 }}>
+                      🕒 上次体检: {healthReport.timestamp}
+                    </Text>
+                  )}
+                </View>
+
+                {/* 评分圆形徽章 */}
+                <View style={[styles.scoreCircle, { borderColor: healthReport?.gradeColor || '#38BDF8' }]}>
+                  <Text style={[styles.scoreNumber, { color: healthReport?.gradeColor || '#38BDF8' }]}>
+                    {healthReport?.score !== undefined ? healthReport.score : '--'}
+                  </Text>
+                  <Text style={styles.scoreUnit}>健康分</Text>
+                </View>
+              </View>
+
+              {/* 立即体检与一键修复按钮组 */}
+              <View style={{ flexDirection: 'row', gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={[styles.btn, styles.btnPrimary, { flex: 1 }]}
+                  onPress={triggerHealthCheck}
+                  disabled={isCheckingHealth}
+                >
+                  {isCheckingHealth ? (
+                    <ActivityIndicator size="small" color="#0A0F1D" />
+                  ) : (
+                    <Text style={styles.btnText}>⚡ 立即全身体检</Text>
+                  )}
+                </TouchableOpacity>
+
+                {healthReport && healthReport.score < 95 && (
+                  <TouchableOpacity
+                    style={[styles.btn, styles.btnWarning, { flex: 1 }]}
+                    onPress={() => executeRepair('full_repair', '一键全面系统大修', '正在执行垃圾清理、DNS重置与底层文件扫描...')}
+                  >
+                    <Text style={styles.btnText}>🛠️ 一键自动修复</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* 体检项目详细检查单 */}
+              {healthReport?.items && (
+                <View style={styles.healthItemsContainer}>
+                  <Text style={{ fontSize: 12, fontWeight: '700', color: '#94A3B8', marginBottom: 8 }}>
+                    📋 深度健康检查结果明细：
+                  </Text>
+                  {healthReport.items.map((item, idx) => {
+                    const isGood = item.status === 'good';
+                    const isWarn = item.status === 'warning' || item.status === 'info';
+                    const badgeColor = isGood ? '#10B981' : isWarn ? '#F59E0B' : '#FB7185';
+                    const statusLabel = isGood ? '健康' : isWarn ? '注意' : '异常';
+                    return (
+                      <View key={idx} style={styles.healthItemRow}>
+                        <View style={{ flex: 1, marginRight: 8 }}>
+                          <Text style={styles.healthItemTitle}>{item.title}</Text>
+                          <Text style={styles.healthItemDesc}>{item.desc}</Text>
+                        </View>
+                        <View style={[styles.itemStatusBadge, { backgroundColor: badgeColor + '22', borderColor: badgeColor }]}>
+                          <Text style={[styles.itemStatusText, { color: badgeColor }]}>{statusLabel}</Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+
             <Text style={styles.sectionTitle}>🛠️ 常见系统故障一键修复矩阵</Text>
             
             {/* SFC 修复 */}
@@ -1310,6 +1426,89 @@ const styles = StyleSheet.create({
     color: '#38BDF8',
     fontWeight: '700',
   },
+  healthHeroCard: {
+    backgroundColor: '#162238',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+  healthHeroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  healthHeroSub: {
+    fontSize: 12,
+    color: '#94A3B8',
+    lineHeight: 18,
+  },
+  healthGradeBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  healthGradeBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#FFF',
+  },
+  scoreCircle: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#0A0F1D',
+    borderWidth: 3,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scoreNumber: {
+    fontSize: 22,
+    fontWeight: '900',
+    lineHeight: 26,
+  },
+  scoreUnit: {
+    fontSize: 10,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  healthItemsContainer: {
+    marginTop: 14,
+    backgroundColor: '#0A0F1D',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  healthItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+  },
+  healthItemTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#F8FAFC',
+  },
+  healthItemDesc: {
+    fontSize: 11,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  itemStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  itemStatusText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
   repairCard: {
     backgroundColor: '#131E32',
     borderRadius: 14,
@@ -1347,6 +1546,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#1E293B',
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  btnWarning: {
+    backgroundColor: '#F59E0B',
   },
   btnDanger: {
     backgroundColor: '#FB7185',

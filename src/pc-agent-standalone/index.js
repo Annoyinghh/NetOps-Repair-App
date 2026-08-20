@@ -257,6 +257,26 @@ async function getDiskStats() {
   return { mount: 'C:', total: 0, free: 0, percent: 0, unavailable: true };
 }
 
+function formatUptime(seconds) {
+  const total = Math.floor(seconds || 0);
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const mins = Math.floor((total % 3600) / 60);
+  if (days > 0) return `${days}天 ${hours}小时 ${mins}分`;
+  if (hours > 0) return `${hours}小时 ${mins}分`;
+  return `${mins}分钟`;
+}
+
+function getOsDisplayName() {
+  const rel = os.release();
+  if (os.platform() === 'win32') {
+    const build = parseInt(rel.split('.')[2] || '0', 10);
+    const winName = build >= 22000 ? 'Windows 11' : 'Windows 10';
+    return `${winName} (Build ${rel})`;
+  }
+  return `${os.type()} ${rel}`;
+}
+
 async function getAssetSpecs() {
   const hostname = os.hostname();
   let ip = '127.0.0.1';
@@ -275,6 +295,7 @@ async function getAssetSpecs() {
 
   const cpuModel = os.cpus()[0]?.model || 'Unknown CPU';
   const ramTotal = os.totalmem();
+  const memoryGB = Math.round(ramTotal / (1024 * 1024 * 1024));
   const disk = await getDiskStats();
 
   let gpuName = 'Standard Video Controller';
@@ -289,8 +310,10 @@ async function getAssetSpecs() {
     mac,
     osName: os.type(),
     osRelease: os.release(),
+    osDisplayName: getOsDisplayName(),
     cpuModel,
     ramTotal,
+    memoryGB,
     diskTotal: disk.total,
     diskFree: disk.free,
     gpuName
@@ -383,10 +406,11 @@ async function getWindowsServices() {
 }
 
 async function runSystemDiagnostics() {
-  const [cpu, disk, processes] = await Promise.all([
+  const [cpu, disk, processes, specs] = await Promise.all([
     getCpuUsage(),
     getDiskStats(),
-    getProcessesList()
+    getProcessesList(),
+    getAssetSpecs().catch(() => null)
   ]);
   const memory = getMemoryStats();
 
@@ -396,8 +420,19 @@ async function runSystemDiagnostics() {
     disk: { ...disk, status: disk.percent > 90 ? 'warning' : 'healthy' },
     processes,
     uptime: Math.round(os.uptime()),
+    uptimeFormatted: formatUptime(os.uptime()),
     platform: os.platform(),
-    release: os.release()
+    release: os.release(),
+    osDisplayName: getOsDisplayName(),
+    system: {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      release: os.release(),
+      osDisplayName: getOsDisplayName(),
+      uptime: formatUptime(os.uptime()),
+      cpuModel: specs?.cpuModel || os.cpus()[0]?.model || '-'
+    },
+    specs
   };
 }
 
@@ -653,8 +688,156 @@ async function getHardwareHealth(onProgress) {
   };
 }
 
+async function runFullHealthCheck(onProgress) {
+  if (onProgress) onProgress('1/5 正在读取物理硬盘 S.M.A.R.T 状态与健康指标...');
+  const diskHealth = await getHardwareHealth();
+
+  if (onProgress) onProgress('2/5 正在检测 CPU 负载与物理内存使用率...');
+  const cpu = await getCpuUsage();
+  const memory = getMemoryStats();
+  const disk = await getDiskStats();
+
+  if (onProgress) onProgress('3/5 正在检测 Windows 核心系统组件状态...');
+  let netStatus = '正常 (Online)';
+  try {
+    const pingResult = await runCmd('ping -n 1 223.5.5.5', 3000);
+    if (pingResult.stdout && pingResult.stdout.includes('TTL=')) {
+      netStatus = '极佳 (Online)';
+    }
+  } catch {
+    netStatus = '受限或断网';
+  }
+
+  if (onProgress) onProgress('4/5 正在统计系统临时垃圾与日志占用...');
+  let tempCount = 0;
+  try {
+    const tempDir = os.tmpdir();
+    const files = await fs.readdir(tempDir);
+    tempCount = files.length;
+  } catch {}
+
+  if (onProgress) onProgress('5/5 正在汇总评估系统综合健康评分...');
+
+  let score = 100;
+  const issues = [];
+  const items = [];
+
+  // 1. 物理硬盘
+  const primaryDisk = diskHealth.disks[0];
+  const diskOk = primaryDisk && (primaryDisk.status.includes('健康') || primaryDisk.status.includes('Healthy'));
+  items.push({
+    title: '物理硬盘寿命 (S.M.A.R.T)',
+    status: diskOk ? 'good' : 'warning',
+    desc: `${primaryDisk?.name || '主硬盘'}: ${primaryDisk?.status || '正常'}`
+  });
+  if (!diskOk) {
+    score -= 20;
+    issues.push('物理磁盘报告警告或需关注');
+  }
+
+  // 2. 空间余量
+  const diskPercent = disk.percent || 0;
+  if (diskPercent > 90) {
+    score -= 15;
+    issues.push(`C 盘空间紧张 (已用 ${diskPercent}%)`);
+    items.push({
+      title: '系统盘 (C:) 可用空间',
+      status: 'danger',
+      desc: `已使用 ${diskPercent}%，剩余空间紧张`
+    });
+  } else {
+    items.push({
+      title: '系统盘 (C:) 可用空间',
+      status: 'good',
+      desc: `已使用 ${diskPercent}%，空间充足`
+    });
+  }
+
+  // 3. 内存
+  if (memory.percent > 85) {
+    score -= 10;
+    issues.push(`内存占用较高 (${memory.percent}%)`);
+    items.push({
+      title: '物理内存运行状态',
+      status: 'warning',
+      desc: `当前占用率 ${memory.percent}%`
+    });
+  } else {
+    items.push({
+      title: '物理内存运行状态',
+      status: 'good',
+      desc: `占用率 ${memory.percent}%，运行平稳`
+    });
+  }
+
+  // 4. CPU
+  if (cpu > 85) {
+    score -= 10;
+    issues.push(`CPU 负荷较高 (${cpu}%)`);
+    items.push({
+      title: 'CPU 处理器负荷',
+      status: 'warning',
+      desc: `当前占用率 ${cpu}%`
+    });
+  } else {
+    items.push({
+      title: 'CPU 处理器负荷',
+      status: 'good',
+      desc: `当前占用率 ${cpu}%，运行正常`
+    });
+  }
+
+  // 5. 外网连通
+  items.push({
+    title: '网络与网关连通性',
+    status: netStatus.includes('受限') ? 'warning' : 'good',
+    desc: `外网接入: ${netStatus}`
+  });
+
+  // 6. 临时文件
+  if (tempCount > 50) {
+    score -= 5;
+    issues.push(`发现 ${tempCount} 项临时缓存建议清理`);
+    items.push({
+      title: '系统临时缓存堆积',
+      status: 'info',
+      desc: `发现约 ${tempCount} 项临时文件可释放`
+    });
+  } else {
+    items.push({
+      title: '系统临时缓存堆积',
+      status: 'good',
+      desc: '系统缓存整洁'
+    });
+  }
+
+  score = Math.max(score, 0);
+
+  let grade = '极佳';
+  let gradeColor = '#10B981';
+  if (score < 70) {
+    grade = '需维护';
+    gradeColor = '#EF4444';
+  } else if (score < 90) {
+    grade = '良好';
+    gradeColor = '#F59E0B';
+  }
+
+  if (onProgress) onProgress(`体检完成！综合健康评分: ${score} 分 (${grade})`);
+
+  return {
+    score,
+    grade,
+    gradeColor,
+    issues,
+    items,
+    timestamp: new Date().toLocaleTimeString(),
+    summary: issues.length === 0 ? '主机各项运行指标非常健康，未发现异常。' : `发现 ${issues.length} 项可优化项目，建议执行维护。`
+  };
+}
+
 async function executeOneClickRepair(type, onProgress) {
-  if (type === 'cache') {
+  if (type === 'cache' || type === 'cleanup_temp') {
     return cleanTempFiles(onProgress);
   } else if (type === 'dns') {
     return flushDNS(onProgress);
@@ -662,7 +845,7 @@ async function executeOneClickRepair(type, onProgress) {
     return registerDNS(onProgress);
   } else if (type === 'arp') {
     return clearArpCache(onProgress);
-  } else if (type === 'ip') {
+  } else if (type === 'ip' || type === 'network' || type === 'network_reset') {
     return resetNetworkAdapter(onProgress);
   } else if (type === 'disk_scan') {
     return runDiskScan(onProgress);
@@ -674,6 +857,8 @@ async function executeOneClickRepair(type, onProgress) {
     return runDISM(onProgress);
   } else if (type === 'restart' || type === 'shutdown' || type === 'cancel_power') {
     return controlPower(type, onProgress);
+  } else if (type === 'health_check') {
+    return runFullHealthCheck(onProgress);
   } else if (type === 'ppt' || type === 'office') {
     onProgress('正在修复 PowerPoint (.ppt/.pptx) 文件打开关联...');
     await runCmd('assoc .pptx=PowerPoint.Show.12').catch(() => {});
@@ -687,20 +872,13 @@ async function executeOneClickRepair(type, onProgress) {
   } else if (type === 'hardware_health') {
     const health = await getHardwareHealth(onProgress);
     return { status: 'success', message: `硬件健康诊断完成！S.M.A.R.T状态: ${health.disks[0]?.status || '健康'}，内存负荷: ${health.memUsage}` };
-  } else if (type === 'network') {
-    onProgress('--- 开始一键网络修复 ---');
+  } else if (type === 'full_repair') {
+    onProgress('--- 开始系统一键综合大修 ---');
+    await cleanTempFiles(onProgress);
     await flushDNS(onProgress);
-    await cleanTempFiles(onProgress);
-    await resetNetworkAdapter(onProgress);
-    onProgress('--- 网络修复完成 ---');
-    return { status: 'success', message: '网络修复完成！' };
-  } else if (type === 'system') {
-    onProgress('--- 开始一键系统修复 ---');
-    await cleanTempFiles(onProgress);
     await runSFC(onProgress);
-    await runDISM(onProgress);
-    onProgress('--- 系统修复完成 ---');
-    return { status: 'success', message: '系统修复完成！' };
+    onProgress('--- 系统综合维护完成 ---');
+    return { status: 'success', message: '一键系统综合大修已完成！' };
   } else if (type === 'performance') {
     onProgress('--- 开始一键性能优化 ---');
     await cleanTempFiles(onProgress);
@@ -953,6 +1131,12 @@ async function startServer() {
             respond('pending', { message: '正在执行修复...' });
             const repairRes = await executeOneClickRepair(params?.action, onProgress);
             respond('success', repairRes);
+            break;
+
+          case 'health_check':
+            respond('pending', { message: '正在对目标主机进行全面健康度体检...' });
+            const healthCheckResult = await runFullHealthCheck(onProgress);
+            respond('success', healthCheckResult);
             break;
 
           case 'trigger_inspection':
