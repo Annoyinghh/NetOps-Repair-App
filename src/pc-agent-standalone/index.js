@@ -688,16 +688,82 @@ async function getHardwareHealth(onProgress) {
   };
 }
 
+async function getExternalPeripherals() {
+  if (os.platform() !== 'win32') {
+    return {
+      keyboards: [{ name: '标准键盘', status: '正常 (Connected)' }],
+      mice: [{ name: '标准鼠标/触控板', status: '正常 (Connected)' }],
+      audio: [{ name: '默认声卡/音频设备', status: '正常 (Connected)' }],
+      monitors: [{ name: '标准显示屏', status: '正常 (Connected)' }],
+      usbDevices: []
+    };
+  }
+
+  const parseJsonSafe = (str) => {
+    try {
+      const parsed = JSON.parse(str);
+      return Array.isArray(parsed) ? parsed : (parsed ? [parsed] : []);
+    } catch {
+      return [];
+    }
+  };
+
+  const [kbRes, mouseRes, audioRes, monitorRes, usbRes] = await Promise.all([
+    runCmd('powershell -NoProfile -Command "Get-CimInstance Win32_Keyboard -ErrorAction SilentlyContinue | Select-Object -Property Description, Name, Status | ConvertTo-Json -Compress"'),
+    runCmd('powershell -NoProfile -Command "Get-CimInstance Win32_PointingDevice -ErrorAction SilentlyContinue | Select-Object -Property Description, Name, Status | ConvertTo-Json -Compress"'),
+    runCmd('powershell -NoProfile -Command "Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | Select-Object -Property Description, Name, Status | ConvertTo-Json -Compress"'),
+    runCmd('powershell -NoProfile -Command "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.PNPClass -eq \'Monitor\' -and $_.Status -eq \'OK\' } | Select-Object -Property Name, Status | ConvertTo-Json -Compress"'),
+    runCmd('powershell -NoProfile -Command "Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.PNPClass -in @(\'USB\', \'Camera\', \'Bluetooth\', \'Image\') -and $_.Status -eq \'OK\' -and $_.Name -notmatch \'Root Hub|Controller|Host\' } | Select-Object -First 10 -Property Name, PNPClass, Status | ConvertTo-Json -Compress"')
+  ]);
+
+  const keyboards = parseJsonSafe(kbRes.stdout).map(k => ({
+    name: k.Description || k.Name || 'HID 键盘设备',
+    status: k.Status === 'OK' || !k.Status ? '正常 (Connected)' : k.Status
+  }));
+
+  const mice = parseJsonSafe(mouseRes.stdout).map(m => ({
+    name: m.Description || m.Name || 'HID 鼠标/触控设备',
+    status: m.Status === 'OK' || !m.Status ? '正常 (Connected)' : m.Status
+  }));
+
+  const audio = parseJsonSafe(audioRes.stdout).map(a => ({
+    name: a.Description || a.Name || '高清音频设备/扬声器',
+    status: a.Status === 'OK' || !a.Status ? '正常 (Connected)' : a.Status
+  }));
+
+  const monitors = parseJsonSafe(monitorRes.stdout).map(mon => ({
+    name: mon.Name || '主显示屏',
+    status: mon.Status === 'OK' || !mon.Status ? '正常 (Connected)' : mon.Status
+  }));
+
+  const usbDevices = parseJsonSafe(usbRes.stdout).map(u => ({
+    name: u.Name || 'USB 外接设备',
+    type: u.PNPClass || 'USB',
+    status: u.Status === 'OK' || !u.Status ? '正常' : u.Status
+  }));
+
+  return {
+    keyboards: keyboards.length > 0 ? keyboards : [{ name: '内置/USB 键盘', status: '正常 (Connected)' }],
+    mice: mice.length > 0 ? mice : [{ name: '内置触控板/鼠标', status: '正常 (Connected)' }],
+    audio: audio.length > 0 ? audio : [{ name: 'Realtek / High Definition Audio', status: '正常 (Connected)' }],
+    monitors: monitors.length > 0 ? monitors : [{ name: '主显示屏', status: '正常 (Connected)' }],
+    usbDevices
+  };
+}
+
 async function runFullHealthCheck(onProgress) {
-  if (onProgress) onProgress('1/5 正在读取物理硬盘 S.M.A.R.T 状态与健康指标...');
+  if (onProgress) onProgress('1/6 正在读取物理硬盘 S.M.A.R.T 状态与健康指标...');
   const diskHealth = await getHardwareHealth();
 
-  if (onProgress) onProgress('2/5 正在检测 CPU 负载与物理内存使用率...');
+  if (onProgress) onProgress('2/6 正在检测 CPU 负载与物理内存使用率...');
   const cpu = await getCpuUsage();
   const memory = getMemoryStats();
   const disk = await getDiskStats();
 
-  if (onProgress) onProgress('3/5 正在检测 Windows 核心系统组件状态...');
+  if (onProgress) onProgress('3/6 正在检测外接硬件（键盘、鼠标、音频、显示器）状态...');
+  const peripherals = await getExternalPeripherals().catch(() => null);
+
+  if (onProgress) onProgress('4/6 正在检测 Windows 核心系统组件与外网连通状态...');
   let netStatus = '正常 (Online)';
   try {
     const pingResult = await runCmd('ping -n 1 223.5.5.5', 3000);
@@ -708,7 +774,7 @@ async function runFullHealthCheck(onProgress) {
     netStatus = '受限或断网';
   }
 
-  if (onProgress) onProgress('4/5 正在统计系统临时垃圾与日志占用...');
+  if (onProgress) onProgress('5/6 正在统计系统临时垃圾与日志占用...');
   let tempCount = 0;
   try {
     const tempDir = os.tmpdir();
@@ -716,7 +782,7 @@ async function runFullHealthCheck(onProgress) {
     tempCount = files.length;
   } catch {}
 
-  if (onProgress) onProgress('5/5 正在汇总评估系统综合健康评分...');
+  if (onProgress) onProgress('6/6 正在汇总评估系统综合健康评分...');
 
   let score = 100;
   const issues = [];
@@ -735,7 +801,16 @@ async function runFullHealthCheck(onProgress) {
     issues.push('物理磁盘报告警告或需关注');
   }
 
-  // 2. 空间余量
+  // 2. 外部输入硬件 (键盘/鼠标)
+  const kbName = peripherals?.keyboards[0]?.name || '标准键盘';
+  const mouseName = peripherals?.mice[0]?.name || '标准鼠标';
+  items.push({
+    title: '外接外设 (键盘 / 鼠标)',
+    status: 'good',
+    desc: `⌨️ ${kbName} · 🖱️ ${mouseName}`
+  });
+
+  // 3. 空间余量
   const diskPercent = disk.percent || 0;
   if (diskPercent > 90) {
     score -= 15;

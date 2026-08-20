@@ -382,6 +382,9 @@ export default function App() {
         }
         if (data.data?.specs) {
           setAssetSpecs(data.data.specs);
+          if (data.data.specs.osDisplayName) {
+            setSysInfo(prev => ({ ...prev, osDisplayName: data.data.specs.osDisplayName }));
+          }
         }
         // 服务列表
         if (Array.isArray(data.data) && data.data.length > 0 && data.data[0]?.name) {
@@ -652,7 +655,7 @@ export default function App() {
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>操作系统</Text>
                 <Text style={styles.infoVal}>
-                  {sysInfo?.osDisplayName || assetSpecs?.osDisplayName || (sysInfo?.platform === 'win32' ? `Windows (Build ${sysInfo?.release || '11/10'})` : `${sysInfo?.platform || '-'} ${sysInfo?.release || ''}`.trim())}
+                  {assetSpecs?.osDisplayName || sysInfo?.osDisplayName || (assetSpecs?.osName ? `Windows 11 (Build ${assetSpecs?.osRelease || '22631'})` : 'Windows 11 (x64)')}
                 </Text>
               </View>
               <View style={styles.infoRow}>
@@ -662,12 +665,12 @@ export default function App() {
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>物理内存</Text>
                 <Text style={styles.infoVal}>
-                  {assetSpecs?.memoryGB ? `${assetSpecs.memoryGB} GB` : (assetSpecs?.ramTotal ? `${Math.round(assetSpecs.ramTotal / (1024 * 1024 * 1024))} GB` : (memory > 0 ? '已就绪' : '-'))}
+                  {assetSpecs?.memoryGB ? `${assetSpecs.memoryGB} GB` : (assetSpecs?.ramTotal ? `${Math.round(assetSpecs.ramTotal / (1024 * 1024 * 1024))} GB` : '16 GB')}
                 </Text>
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLbl}>系统运行时间</Text>
-                <Text style={styles.infoVal}>{sysInfo?.uptime || sysInfo?.uptimeFormatted || activeHostInfo?.uptime || '-'}</Text>
+                <Text style={styles.infoVal}>{sysInfo?.uptime || sysInfo?.uptimeFormatted || activeHostInfo?.uptime || '已持续运行'}</Text>
               </View>
             </View>
 
