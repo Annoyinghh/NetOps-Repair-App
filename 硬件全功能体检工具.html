@@ -826,14 +826,20 @@
         stText.textContent = text;
       };
 
-      // 1. 屏幕测试
-      setStepStatus('step-screen', 'running', '正在读取分辨率与刷新率...', true);
+      // 1. 屏幕测试 (计算真实物理像素与 Windows DPI 缩放)
+      setStepStatus('step-screen', 'running', '正在读取真实物理分辨率与色彩深度...', true);
       updateProgress(15);
       await new Promise(r => setTimeout(r, 600));
-      const w = window.screen.width, h = window.screen.height, dpr = window.devicePixelRatio || 1;
-      const colorDepth = window.screen.colorDepth;
-      autoResults.screen = `${w} x ${h} (${dpr >= 1.5 ? '高清Retina/HiDPI' : '标准'} · ${colorDepth}位色深)`;
-      setStepStatus('step-screen', 'done', `正常 (${autoResults.screen})`);
+      const dpr = window.devicePixelRatio || 1;
+      const logicW = window.screen.width;
+      const logicH = window.screen.height;
+      const physW = Math.round(logicW * dpr);
+      const physH = Math.round(logicH * dpr);
+      const colorDepth = window.screen.colorDepth || 24;
+      const scaleText = dpr !== 1 ? ` · ${Math.round(dpr * 100)}% 缩放` : '';
+
+      autoResults.screen = `${physW} x ${physH} 物理硬件分辨率 (逻辑渲染: ${logicW}x${logicH}${scaleText} · ${colorDepth}位色深)`;
+      setStepStatus('step-screen', 'done', `正常 (${physW} x ${physH})`);
 
       // 2. 音响发声测试
       setStepStatus('step-audio', 'running', '正在驱动左/右声道发声...', true);

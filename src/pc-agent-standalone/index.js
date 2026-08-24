@@ -10,11 +10,13 @@
  */
 
 const http = require('http');
+const net = require('net');
 const { WebSocketServer } = require('ws');
 const os = require('os');
-const { exec, execFile, spawn } = require('child_process');
+const { exec, execFile, spawn, execSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 
 // ==================== 配置 ====================
@@ -1080,6 +1082,182 @@ async function runNetworkDiagnostics(onProgress) {
   };
 }
 
+// ==================== 远程桌面与实时键鼠中枢 ====================
+let remoteHelperProc = null;
+let remoteTcpClient = null;
+let remoteSubscribers = new Set();
+let primaryScreenBounds = { width: 1920, height: 1080 };
+
+function ensureRemoteHelperRunning() {
+  return new Promise((resolve, reject) => {
+    if (os.platform() !== 'win32') {
+      return reject(new Error('远程桌面仅支持 Windows 系统。'));
+    }
+
+    const searchDirs = [
+      path.dirname(process.execPath),
+      process.cwd(),
+      __dirname,
+      'd:\\Project\\netops-repair\\src\\pc-agent-standalone'
+    ];
+    let helperExe = null;
+    for (const d of searchDirs) {
+      const candidate = path.join(d, 'RemoteHelper.exe');
+      if (fsSync.existsSync(candidate)) {
+        helperExe = candidate;
+        break;
+      }
+    }
+
+    if (!helperExe) {
+      try {
+        const outPath = path.join(path.dirname(process.execPath), 'RemoteHelper.exe');
+        for (const d of searchDirs) {
+          const csCandidate = path.join(d, 'RemoteHelper.cs');
+          if (fsSync.existsSync(csCandidate)) {
+            execSync(`C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /target:exe /out:"${outPath}" /optimize+ /platform:x64 "${csCandidate}"`);
+            helperExe = outPath;
+            break;
+          }
+        }
+      } catch (e) {
+        return reject(new Error('无法自动编译远程桌面组件: ' + e.message));
+      }
+    }
+
+    if (!helperExe) {
+      return reject(new Error('未找到 RemoteHelper.exe 远程桌面组件。'));
+    }
+
+    if (remoteHelperProc && !remoteHelperProc.killed) {
+      return resolve();
+    }
+
+    remoteHelperProc = spawn(helperExe, ['3002'], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      windowsHide: true
+    });
+
+    remoteHelperProc.on('error', (err) => {
+      console.error('[Remote] Helper 启动异常:', err.message);
+    });
+
+    remoteHelperProc.on('exit', () => {
+      remoteHelperProc = null;
+      remoteTcpClient = null;
+    });
+
+    setTimeout(resolve, 300);
+  });
+}
+
+function startRemoteStreaming(ws, options = {}) {
+  remoteSubscribers.add(ws);
+
+  if (remoteTcpClient && !remoteTcpClient.destroyed) {
+    const w = options.width || 960;
+    const h = options.height || 540;
+    const q = options.quality || 60;
+    const fps = options.fps || 18;
+    remoteTcpClient.write(`CONFIG:${w}:${h}:${q}:${fps}\n`);
+    return;
+  }
+
+  ensureRemoteHelperRunning().then(() => {
+    remoteTcpClient = net.createConnection({ port: 3002 }, () => {
+      console.log('[Remote] 📱 已接通远程桌面推流通道');
+      const w = options.width || 960;
+      const h = options.height || 540;
+      const q = options.quality || 60;
+      const fps = options.fps || 18;
+      remoteTcpClient.write(`CONFIG:${w}:${h}:${q}:${fps}\n`);
+    });
+
+    let buffer = Buffer.alloc(0);
+    let initReceived = false;
+
+    remoteTcpClient.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+
+      if (!initReceived) {
+        const idx = buffer.indexOf('\n');
+        if (idx !== -1) {
+          const initStr = buffer.slice(0, idx).toString();
+          buffer = buffer.slice(idx + 1);
+          initReceived = true;
+          const parts = initStr.split(':');
+          if (parts.length >= 3) {
+            primaryScreenBounds = {
+              width: parseInt(parts[1], 10) || 1920,
+              height: parseInt(parts[2], 10) || 1080
+            };
+          }
+        }
+      }
+
+      while (buffer.length >= 4) {
+        const len = buffer.readUInt32BE(0);
+        if (buffer.length < 4 + len) break;
+        const frameBuf = buffer.slice(4, 4 + len);
+        buffer = buffer.slice(4 + len);
+
+        const base64Frame = frameBuf.toString('base64');
+        const packet = JSON.stringify({
+          type: 'push',
+          event: 'desktop_frame',
+          data: {
+            frame: base64Frame,
+            screenWidth: primaryScreenBounds.width,
+            screenHeight: primaryScreenBounds.height,
+            timestamp: Date.now()
+          }
+        });
+
+        for (const client of remoteSubscribers) {
+          if (client.readyState === 1) { // WebSocket.OPEN
+            client.send(packet);
+          }
+        }
+      }
+    });
+
+    remoteTcpClient.on('error', (err) => {
+      console.error('[Remote] TCP 通道异常:', err.message);
+    });
+
+    remoteTcpClient.on('close', () => {
+      remoteTcpClient = null;
+    });
+  }).catch((err) => {
+    console.error('[Remote] 开启推流失败:', err.message);
+  });
+}
+
+function stopRemoteStreaming(ws) {
+  remoteSubscribers.delete(ws);
+  if (remoteSubscribers.size === 0 && remoteTcpClient) {
+    remoteTcpClient.end();
+    remoteTcpClient = null;
+    if (remoteHelperProc) {
+      remoteHelperProc.kill();
+      remoteHelperProc = null;
+    }
+  }
+}
+
+function sendRemoteInput(cmd) {
+  if (remoteTcpClient && !remoteTcpClient.destroyed) {
+    remoteTcpClient.write(cmd.trim() + '\n');
+  } else {
+    ensureRemoteHelperRunning().then(() => {
+      const client = net.createConnection({ port: 3002 }, () => {
+        client.write(cmd.trim() + '\n');
+        setTimeout(() => client.end(), 80);
+      });
+    }).catch(() => {});
+  }
+}
+
 // ==================== HTTP + WebSocket 服务器 ====================
 
 async function startServer() {
@@ -1305,6 +1483,34 @@ async function startServer() {
             respond('success', await getAutoStartStatus());
             break;
 
+          // ==================== 远程桌面与实时键鼠操控 ====================
+          case 'desktop_start':
+            startRemoteStreaming(ws, params);
+            respond('success', { message: '远程桌面推流已开启。', screenWidth: primaryScreenBounds.width, screenHeight: primaryScreenBounds.height });
+            break;
+
+          case 'desktop_stop':
+            stopRemoteStreaming(ws);
+            respond('success', { message: '远程桌面推流已停止。' });
+            break;
+
+          case 'remote_mouse':
+            if (params?.cmd) {
+              sendRemoteInput(params.cmd);
+            }
+            respond('success', { ok: true });
+            break;
+
+          case 'remote_key':
+            if (params?.text) {
+              const b64 = Buffer.from(params.text, 'utf8').toString('base64');
+              sendRemoteInput(`TEXT:${b64}`);
+            } else if (params?.key) {
+              sendRemoteInput(`KEY:${params.key}`);
+            }
+            respond('success', { ok: true });
+            break;
+
           default:
             respond('error', null, { code: 'UNKNOWN_ACTION', message: '未知操作' });
         }
@@ -1317,11 +1523,13 @@ async function startServer() {
     ws.on('close', () => {
       console.log('[Agent] 客户端已断开。');
       clearInterval(telemetryInterval);
+      stopRemoteStreaming(ws);
     });
 
     ws.on('error', (err) => {
       console.error('[Agent] WebSocket 错误:', err.message);
       clearInterval(telemetryInterval);
+      stopRemoteStreaming(ws);
     });
   });
 

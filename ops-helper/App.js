@@ -13,6 +13,8 @@ import {
   FlatList,
   Platform,
   Modal,
+  Image,
+  Dimensions,
 } from 'react-native';
 import * as Network from 'expo-network';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -78,6 +80,18 @@ export default function App() {
   const [services, setServices] = useState([]);
   const [customCmd, setCustomCmd] = useState('');
   const [portScanResults, setPortScanResults] = useState(null);
+
+  // 远程桌面与实时键鼠操控 (向日葵模式)
+  const [desktopFrame, setDesktopFrame] = useState(null);
+  const [desktopScreenSize, setDesktopScreenSize] = useState({ width: 1920, height: 1080 });
+  const [desktopContainerSize, setDesktopContainerSize] = useState({ width: 0, height: 0 });
+  const [isDesktopStreaming, setIsDesktopStreaming] = useState(false);
+  const [desktopQuality, setDesktopQuality] = useState('流畅 (720P)');
+  const [remoteTextInput, setRemoteTextInput] = useState('');
+  const [isTextModalOpen, setIsTextModalOpen] = useState(false);
+  const [autoPressEnter, setAutoPressEnter] = useState(false);
+  const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+  const [remoteMouseMode, setRemoteMouseMode] = useState('click'); // 'click' | 'double' | 'right' | 'move'
 
   // 确认操作弹层
   const [confirmModal, setConfirmModal] = useState({
@@ -359,6 +373,20 @@ export default function App() {
       return;
     }
 
+    // 2.1 处理 push desktop_frame (向日葵远程桌面帧)
+    if (data.type === 'push' && data.event === 'desktop_frame') {
+      if (data.data?.frame) {
+        setDesktopFrame(data.data.frame);
+        if (data.data.screenWidth && data.data.screenHeight) {
+          setDesktopScreenSize({
+            width: data.data.screenWidth,
+            height: data.data.screenHeight,
+          });
+        }
+      }
+      return;
+    }
+
     // 3. 处理 response (通用请求应答)
     if (data.type === 'response') {
       if (data.status === 'pending') {
@@ -499,6 +527,60 @@ export default function App() {
         sendAgentRequest('process_kill', { pid });
       },
     });
+  }
+
+  // ==================== 远程桌面实时操控 (向日葵模式) ====================
+  useEffect(() => {
+    if (currentTab === 'remote' && isConnected) {
+      setIsDesktopStreaming(true);
+      sendAgentRequest('desktop_start', { width: 960, height: 540, quality: 60, fps: 18 });
+      addLog('🖥️ 已开启远程桌面实时推流 (向日葵模式)', 'sent');
+    } else if (currentTab !== 'remote' && isDesktopStreaming) {
+      setIsDesktopStreaming(false);
+      sendAgentRequest('desktop_stop', {});
+    }
+  }, [currentTab, isConnected]);
+
+  function handleScreenTouch(evt, touchType = null) {
+    if (!desktopContainerSize.width || !desktopContainerSize.height) return;
+    const { locationX, locationY } = evt.nativeEvent;
+    const scaleX = desktopScreenSize.width / desktopContainerSize.width;
+    const scaleY = desktopScreenSize.height / desktopContainerSize.height;
+    const targetX = Math.min(desktopScreenSize.width, Math.max(0, Math.round(locationX * scaleX)));
+    const targetY = Math.min(desktopScreenSize.height, Math.max(0, Math.round(locationY * scaleY)));
+
+    setLastMousePos({ x: targetX, y: targetY });
+
+    const mode = touchType || remoteMouseMode;
+    if (mode === 'click') {
+      sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:0` });
+    } else if (mode === 'double') {
+      sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:1` });
+    } else if (mode === 'right') {
+      sendAgentRequest('remote_mouse', { cmd: `CLICK:right:${targetX}:${targetY}:0` });
+    } else if (mode === 'move') {
+      sendAgentRequest('remote_mouse', { cmd: `MOVE:${targetX}:${targetY}` });
+    }
+  }
+
+  function handleSendRemoteKey(key) {
+    sendAgentRequest('remote_key', { key });
+    addLog(`⌨️ 发送快捷键: ${key}`, 'sent');
+  }
+
+  function handleSendRemoteWheel(delta) {
+    sendAgentRequest('remote_mouse', { cmd: `WHEEL:${delta}` });
+  }
+
+  function handleSendRemoteText() {
+    if (!remoteTextInput) return;
+    sendAgentRequest('remote_key', { text: remoteTextInput });
+    if (autoPressEnter) {
+      setTimeout(() => sendAgentRequest('remote_key', { key: 'Enter' }), 60);
+    }
+    addLog(`⌨️ 发送输入文本: "${remoteTextInput}"`, 'sent');
+    setRemoteTextInput('');
+    setIsTextModalOpen(false);
   }
 
   // 过滤进程列表
@@ -877,6 +959,169 @@ export default function App() {
           </View>
         )}
 
+        {/* ========== TAB 2: 🖥️ 远程桌面实时操控 (向日葵模式) ========== */}
+        {currentTab === 'remote' && (
+          <View style={{ flex: 1 }}>
+            {!isConnected ? (
+              <View style={styles.radarCard}>
+                <Text style={{ fontSize: 16, fontWeight: '700', color: '#F8FAFC', marginBottom: 6 }}>
+                  🖥️ 远程桌面未连通
+                </Text>
+                <Text style={styles.radarSub}>
+                  请先连接到目标电脑的主机 Agent，即可像向日葵一样在手机上实时查看桌面画面并触控操作鼠标和键盘。
+                </Text>
+                <TouchableOpacity
+                  style={[styles.btn, styles.btnPrimary, { marginTop: 12 }]}
+                  onPress={() => autoRadarScanAndConnect(true)}
+                >
+                  <Text style={styles.btnText}>🔍 立即雷达嗅探连接电脑</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View>
+                {/* 状态与画质控制栏 */}
+                <View style={styles.remoteHeaderBar}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <View style={[styles.statusDot, { backgroundColor: '#10B981' }]} />
+                    <Text style={styles.remoteHostTitle}>
+                      {activeHostInfo?.hostname || 'Windows PC'} ({desktopScreenSize.width}x{desktopScreenSize.height})
+                    </Text>
+                  </View>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <TouchableOpacity
+                      style={styles.remotePillBtn}
+                      onPress={() => {
+                        setIsDesktopStreaming(true);
+                        sendAgentRequest('desktop_start', { width: 960, height: 540, quality: 60, fps: 18 });
+                      }}
+                    >
+                      <Text style={styles.remotePillText}>🔄 刷新画面</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.remotePillBtn, { backgroundColor: 'rgba(56, 189, 248, 0.2)' }]}
+                      onPress={() => setIsTextModalOpen(true)}
+                    >
+                      <Text style={[styles.remotePillText, { color: '#38BDF8' }]}>⌨️ 打字输入</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* 实时桌面视口容器 */}
+                <View
+                  style={styles.desktopScreenContainer}
+                  onLayout={(e) => {
+                    const { width, height } = e.nativeEvent.layout;
+                    setDesktopContainerSize({ width, height });
+                  }}
+                >
+                  {desktopFrame ? (
+                    <TouchableOpacity
+                      activeOpacity={0.95}
+                      style={{ width: '100%', height: '100%' }}
+                      onPress={(e) => handleScreenTouch(e, 'click')}
+                      onLongPress={(e) => handleScreenTouch(e, 'right')}
+                      delayLongPress={500}
+                    >
+                      <Image
+                        source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
+                        style={styles.desktopScreenImage}
+                        resizeMode="contain"
+                      />
+                    </TouchableOpacity>
+                  ) : (
+                    <View style={styles.desktopLoadingBox}>
+                      <ActivityIndicator size="large" color="#38BDF8" />
+                      <Text style={styles.desktopLoadingText}>正在加载电脑实时桌面画面流...</Text>
+                    </View>
+                  )}
+                </View>
+
+                {/* 触控手势提示条 */}
+                <View style={styles.gestureHintBar}>
+                  <Text style={styles.gestureHintText}>
+                    👆 单击=左键 · ⏳ 长按=右键 · 🎯 坐标: ({lastMousePos.x}, {lastMousePos.y})
+                  </Text>
+                </View>
+
+                {/* 运维触控快捷工具条 */}
+                <View style={styles.card}>
+                  <Text style={styles.cardTitle}>🎮 触控鼠标模式与快捷动作</Text>
+
+                  {/* 模式切换 */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                    {[
+                      { id: 'click', label: '👆 左键单击' },
+                      { id: 'double', label: '✌️ 双击打开' },
+                      { id: 'right', label: '👉 右键菜单' },
+                      { id: 'move', label: '🎯 移动光标' },
+                    ].map((m) => (
+                      <TouchableOpacity
+                        key={m.id}
+                        style={[styles.modeBtn, remoteMouseMode === m.id && styles.modeBtnActive]}
+                        onPress={() => setRemoteMouseMode(m.id)}
+                      >
+                        <Text style={[styles.modeBtnText, remoteMouseMode === m.id && styles.modeBtnTextActive]}>
+                          {m.label}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  {/* 鼠标滚轮 */}
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                    <TouchableOpacity
+                      style={[styles.btn, styles.btnSecondary, { flex: 1, height: 40 }]}
+                      onPress={() => handleSendRemoteWheel(120)}
+                    >
+                      <Text style={[styles.btnText, { color: '#38BDF8' }]}>🔼 向上滚轮</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.btn, styles.btnSecondary, { flex: 1, height: 40 }]}
+                      onPress={() => handleSendRemoteWheel(-120)}
+                    >
+                      <Text style={[styles.btnText, { color: '#38BDF8' }]}>🔽 向下滚轮</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* 系统快捷键组 */}
+                  <Text style={[styles.cardTitle, { marginTop: 16, fontSize: 13, color: '#94A3B8' }]}>
+                    ⚡ Windows 系统快捷键
+                  </Text>
+                  <View style={styles.quickKeyGrid}>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('Win')}>
+                      <Text style={styles.quickKeyText}>🪟 开始 (Win)</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('WinD')}>
+                      <Text style={styles.quickKeyText}>🖥️ 显示桌面</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('AltTab')}>
+                      <Text style={styles.quickKeyText}>🔄 切换窗口</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('TaskMgr')}>
+                      <Text style={styles.quickKeyText}>📋 任务管理器</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('Enter')}>
+                      <Text style={styles.quickKeyText}>↵ 回车 (Enter)</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('Backspace')}>
+                      <Text style={styles.quickKeyText}>⌫ 退格 (Back)</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.quickKeyBtn} onPress={() => handleSendRemoteKey('Esc')}>
+                      <Text style={styles.quickKeyText}>Esc 取消</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.quickKeyBtn, { borderColor: 'rgba(245, 158, 11, 0.4)' }]}
+                      onPress={() => handleSendRemoteKey('Lock')}
+                    >
+                      <Text style={[styles.quickKeyText, { color: '#F59E0B' }]}>🔒 一键锁屏</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+
         {/* ========== TAB 3: 管控中心 (CONTROL & CMD) ========== */}
         {currentTab === 'control' && (
           <View>
@@ -1178,6 +1423,7 @@ export default function App() {
       <View style={styles.bottomNav}>
         {[
           { id: 'dashboard', icon: '📊', label: '仪表盘' },
+          { id: 'remote', icon: '🖥️', label: '远程桌面' },
           { id: 'repairs', icon: '🛠️', label: '一键维护' },
           { id: 'control', icon: '⚡', label: '管控中心' },
           { id: 'devices', icon: '🌐', label: '机房设备' },
@@ -1195,6 +1441,53 @@ export default function App() {
           );
         })}
       </View>
+
+      {/* 远程打字输入 Modal */}
+      <Modal
+        visible={isTextModalOpen}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setIsTextModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>⌨️ 远程文本输入与打字</Text>
+            <Text style={styles.modalMessage}>
+              在下方输入中英文字符，点击发送将立即同步输入到电脑当前焦点的输入框/光标处：
+            </Text>
+            <TextInput
+              style={[styles.cmdInput, { marginBottom: 12 }]}
+              value={remoteTextInput}
+              onChangeText={setRemoteTextInput}
+              placeholder="请输入要发送到电脑的文本..."
+              placeholderTextColor="#64748B"
+              autoFocus={true}
+            />
+            <TouchableOpacity
+              style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 16 }}
+              onPress={() => setAutoPressEnter(!autoPressEnter)}
+            >
+              <Text style={{ color: autoPressEnter ? '#10B981' : '#64748B', fontSize: 13 }}>
+                {autoPressEnter ? '☑️ 发送后自动按回车键 (Enter)' : '⬜ 发送后自动按回车键 (Enter)'}
+              </Text>
+            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnSecondary, { flex: 1 }]}
+                onPress={() => setIsTextModalOpen(false)}
+              >
+                <Text style={[styles.btnText, { color: '#F8FAFC' }]}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, { flex: 1 }]}
+                onPress={handleSendRemoteText}
+              >
+                <Text style={[styles.btnText, { color: '#0A0F1D' }]}>🚀 立即发送到电脑</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* 二次确认操作 Modal */}
       <Modal
@@ -1823,5 +2116,118 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     lineHeight: 20,
     marginBottom: 20,
+  },
+  // 远程桌面专用样式
+  remoteHeaderBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+    backgroundColor: '#131E32',
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  remoteHostTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#F8FAFC',
+  },
+  remotePillBtn: {
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  remotePillText: {
+    fontSize: 11,
+    color: '#CBD5E1',
+    fontWeight: '700',
+  },
+  desktopScreenContainer: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+    backgroundColor: '#000',
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  desktopScreenImage: {
+    width: '100%',
+    height: '100%',
+  },
+  desktopLoadingBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  desktopLoadingText: {
+    fontSize: 12,
+    color: '#94A3B8',
+  },
+  gestureHintBar: {
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.2)',
+  },
+  gestureHintText: {
+    fontSize: 11,
+    color: '#7DD3FC',
+    textAlign: 'center',
+  },
+  modeBtn: {
+    flex: 1,
+    backgroundColor: '#0A0F1D',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderRadius: 8,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  modeBtnActive: {
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+    borderColor: '#38BDF8',
+  },
+  modeBtnText: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  modeBtnTextActive: {
+    color: '#38BDF8',
+    fontWeight: '700',
+  },
+  quickKeyGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 8,
+  },
+  quickKeyBtn: {
+    flexBasis: '23%',
+    flexGrow: 1,
+    backgroundColor: '#0A0F1D',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quickKeyText: {
+    fontSize: 11,
+    color: '#CBD5E1',
+    fontWeight: '700',
   },
 });
