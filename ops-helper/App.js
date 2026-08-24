@@ -92,6 +92,9 @@ export default function App() {
   const [autoPressEnter, setAutoPressEnter] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [remoteMouseMode, setRemoteMouseMode] = useState('click'); // 'click' | 'double' | 'right' | 'move'
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [zoomScale, setZoomScale] = useState(1.0); // 1.0, 1.5, 2.0
+  const [isLandscape, setIsLandscape] = useState(false);
 
   // AI 智能诊断与自主编程中枢 (AI Copilot & Auto-Coder)
   const [aiMessages, setAiMessages] = useState([
@@ -1356,19 +1359,26 @@ try {
                   </View>
                   <View style={{ flexDirection: 'row', gap: 6 }}>
                     <TouchableOpacity
+                      style={[styles.remotePillBtn, { backgroundColor: '#0284C7', borderColor: '#38BDF8' }]}
+                      onPress={() => setIsFullScreen(true)}
+                    >
+                      <Text style={[styles.remotePillText, { color: '#FFF' }]}>⛶ 手机全屏遥控</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
                       style={styles.remotePillBtn}
                       onPress={() => {
                         setIsDesktopStreaming(true);
-                        sendAgentRequest('desktop_start', { width: 960, height: 540, quality: 60, fps: 18 });
+                        sendAgentRequest('desktop_start', { width: 1280, height: 720, quality: 65, fps: 20 });
+                        addLog('🖥️ 正在重新连接并刷新远程桌面推流...', 'sent');
                       }}
                     >
-                      <Text style={styles.remotePillText}>🔄 刷新画面</Text>
+                      <Text style={styles.remotePillText}>🔄 刷新</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.remotePillBtn, { backgroundColor: 'rgba(56, 189, 248, 0.2)' }]}
                       onPress={() => setIsTextModalOpen(true)}
                     >
-                      <Text style={[styles.remotePillText, { color: '#38BDF8' }]}>⌨️ 打字输入</Text>
+                      <Text style={[styles.remotePillText, { color: '#38BDF8' }]}>⌨️ 打字</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1385,9 +1395,9 @@ try {
                     <TouchableOpacity
                       activeOpacity={0.95}
                       style={{ width: '100%', height: '100%' }}
-                      onPress={(e) => handleScreenTouch(e, 'click')}
+                      onPress={(e) => handleScreenTouch(e, remoteMouseMode)}
                       onLongPress={(e) => handleScreenTouch(e, 'right')}
-                      delayLongPress={500}
+                      delayLongPress={450}
                     >
                       <Image
                         source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
@@ -1398,7 +1408,13 @@ try {
                   ) : (
                     <View style={styles.desktopLoadingBox}>
                       <ActivityIndicator size="large" color="#38BDF8" />
-                      <Text style={styles.desktopLoadingText}>正在加载电脑实时桌面画面流...</Text>
+                      <Text style={styles.desktopLoadingText}>正在接收电脑实时桌面画面流...</Text>
+                      <TouchableOpacity
+                        style={[styles.btn, styles.btnSecondary, { marginTop: 10, height: 36, paddingHorizontal: 14 }]}
+                        onPress={() => sendAgentRequest('desktop_start', { width: 1280, height: 720, quality: 65, fps: 20 })}
+                      >
+                        <Text style={[styles.btnText, { color: '#38BDF8' }]}>⚡ 点此重新拉流</Text>
+                      </TouchableOpacity>
                     </View>
                   )}
                 </View>
@@ -1406,7 +1422,7 @@ try {
                 {/* 触控手势提示条 */}
                 <View style={styles.gestureHintBar}>
                   <Text style={styles.gestureHintText}>
-                    👆 单击=左键 · ⏳ 长按=右键 · 🎯 坐标: ({lastMousePos.x}, {lastMousePos.y})
+                    👆 单击={remoteMouseMode === 'double' ? '双击打开' : remoteMouseMode === 'right' ? '右键菜单' : '左键'} · 🎯 坐标: ({lastMousePos.x}, {lastMousePos.y}) · 支持点击右上角【⛶ 手机全屏遥控】放大操控！
                   </Text>
                 </View>
 
@@ -1874,6 +1890,174 @@ try {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* 沉浸式手机全屏遥控与缩放 Modal */}
+      <Modal
+        visible={isFullScreen}
+        transparent={false}
+        animationType="slide"
+        onRequestClose={() => {
+          setIsFullScreen(false);
+          setZoomScale(1.0);
+        }}
+      >
+        <SafeAreaView style={{ flex: 1, backgroundColor: '#000' }}>
+          <StatusBar hidden={true} />
+
+          {/* 顶部悬浮控制条 */}
+          <View style={styles.fullScreenTopBar}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={[styles.statusDot, { backgroundColor: '#10B981' }]} />
+              <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFF' }}>
+                {activeHostInfo?.hostname || '电脑桌面'} ({desktopScreenSize.width}x{desktopScreenSize.height})
+              </Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+              {/* 缩放切换 */}
+              <TouchableOpacity
+                style={styles.fullScreenPill}
+                onPress={() => {
+                  setZoomScale(prev => (prev === 1.0 ? 1.5 : prev === 1.5 ? 2.0 : 1.0));
+                }}
+              >
+                <Text style={styles.fullScreenPillText}>🔍 {zoomScale}x 缩放</Text>
+              </TouchableOpacity>
+
+              {/* 刷新 */}
+              <TouchableOpacity
+                style={styles.fullScreenPill}
+                onPress={() => {
+                  sendAgentRequest('desktop_start', { width: 1280, height: 720, quality: 65, fps: 20 });
+                }}
+              >
+                <Text style={styles.fullScreenPillText}>🔄 刷新</Text>
+              </TouchableOpacity>
+
+              {/* 打字 */}
+              <TouchableOpacity
+                style={styles.fullScreenPill}
+                onPress={() => setIsTextModalOpen(true)}
+              >
+                <Text style={styles.fullScreenPillText}>⌨️ 打字</Text>
+              </TouchableOpacity>
+
+              {/* 退出全屏 */}
+              <TouchableOpacity
+                style={[styles.fullScreenPill, { backgroundColor: 'rgba(239, 68, 68, 0.4)', borderColor: '#EF4444' }]}
+                onPress={() => {
+                  setIsFullScreen(false);
+                  setZoomScale(1.0);
+                }}
+              >
+                <Text style={[styles.fullScreenPillText, { color: '#FFF' }]}>🗗 退出</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* 全屏视口 (双向滚动以支持放大平移) */}
+          <ScrollView
+            style={{ flex: 1, backgroundColor: '#000' }}
+            contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center' }}
+            horizontal={true}
+            showsHorizontalScrollIndicator={false}
+          >
+            <ScrollView
+              contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center' }}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+            >
+              <View
+                style={{
+                  width: Dimensions.get('window').width * zoomScale,
+                  height: (Dimensions.get('window').width * zoomScale * (desktopScreenSize.height / desktopScreenSize.width)),
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+              >
+                {desktopFrame ? (
+                  <TouchableOpacity
+                    activeOpacity={0.95}
+                    style={{ width: '100%', height: '100%' }}
+                    onPress={(e) => {
+                      const container = {
+                        width: Dimensions.get('window').width * zoomScale,
+                        height: (Dimensions.get('window').width * zoomScale * (desktopScreenSize.height / desktopScreenSize.width))
+                      };
+                      handleScreenTouch(e, remoteMouseMode, container);
+                    }}
+                    onLongPress={(e) => {
+                      const container = {
+                        width: Dimensions.get('window').width * zoomScale,
+                        height: (Dimensions.get('window').width * zoomScale * (desktopScreenSize.height / desktopScreenSize.width))
+                      };
+                      handleScreenTouch(e, 'right', container);
+                    }}
+                    delayLongPress={450}
+                  >
+                    <Image
+                      source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
+                      style={{ width: '100%', height: '100%' }}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.desktopLoadingBox}>
+                    <ActivityIndicator size="large" color="#38BDF8" />
+                    <Text style={styles.desktopLoadingText}>正在拉取全屏桌面画面...</Text>
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+          </ScrollView>
+
+          {/* 底部悬浮操控工具条 */}
+          <View style={styles.fullScreenBottomBar}>
+            <TouchableOpacity
+              style={[styles.floatingKeyBtn, remoteMouseMode === 'click' && styles.floatingKeyBtnActive]}
+              onPress={() => setRemoteMouseMode('click')}
+            >
+              <Text style={styles.floatingKeyText}>👆 单击</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.floatingKeyBtn, remoteMouseMode === 'double' && styles.floatingKeyBtnActive]}
+              onPress={() => setRemoteMouseMode('double')}
+            >
+              <Text style={styles.floatingKeyText}>✌️ 双击</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.floatingKeyBtn, remoteMouseMode === 'right' && styles.floatingKeyBtnActive]}
+              onPress={() => setRemoteMouseMode('right')}
+            >
+              <Text style={styles.floatingKeyText}>👉 右键</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.floatingKeyBtn}
+              onPress={() => handleSendRemoteKey('Win')}
+            >
+              <Text style={styles.floatingKeyText}>🪟 Win</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.floatingKeyBtn}
+              onPress={() => handleSendRemoteKey('WinD')}
+            >
+              <Text style={styles.floatingKeyText}>🖥️ 桌面</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.floatingKeyBtn}
+              onPress={() => sendAgentRequest('remote_mouse', { cmd: 'WHEEL:120' })}
+            >
+              <Text style={styles.floatingKeyText}>▲ 滚轮</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.floatingKeyBtn}
+              onPress={() => sendAgentRequest('remote_mouse', { cmd: 'WHEEL:-120' })}
+            >
+              <Text style={styles.floatingKeyText}>▼ 滚轮</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
       </Modal>
 
       {/* 远程打字输入 Modal */}
@@ -2816,5 +3000,56 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginBottom: 4,
     fontWeight: '600',
+  },
+  // 全屏沉浸式遥控样式
+  fullScreenTopBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  fullScreenPill: {
+    backgroundColor: '#1E293B',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  fullScreenPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#CBD5E1',
+  },
+  fullScreenBottomBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  floatingKeyBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  floatingKeyBtnActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#38BDF8',
+  },
+  floatingKeyText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#E2E8F0',
   },
 });
