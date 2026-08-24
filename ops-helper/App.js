@@ -93,6 +93,26 @@ export default function App() {
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
   const [remoteMouseMode, setRemoteMouseMode] = useState('click'); // 'click' | 'double' | 'right' | 'move'
 
+  // AI 智能诊断与自主编程中枢 (AI Copilot & Auto-Coder)
+  const [aiMessages, setAiMessages] = useState([
+    {
+      id: 'welcome',
+      role: 'assistant',
+      text: '您好！我是 NetOps AI 智能诊断与编程专家。\n我已实时连接当前电脑诊断系统，可以根据主机的 CPU、内存、C 盘空间、健康扣分项和网络状态，为您现场自主编写针对性的 PowerShell / Batch 修复程序并一键执行！',
+      code: null,
+      language: 'powershell',
+      time: '刚刚'
+    }
+  ]);
+  const [aiInputPrompt, setAiInputPrompt] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [aiApiKey, setAiApiKey] = useState('sk-c251ba28ec4f4443be9b4edc1e3d1fed');
+  const [aiBaseUrl, setAiBaseUrl] = useState('https://api.deepseek.com');
+  const [aiModel, setAiModel] = useState('deepseek-chat');
+  const [isAiConfigModalOpen, setIsAiConfigModalOpen] = useState(false);
+  const [executingCodeId, setExecutingCodeId] = useState(null);
+  const [executedResults, setExecutedResults] = useState({});
+
   // 确认操作弹层
   const [confirmModal, setConfirmModal] = useState({
     visible: false,
@@ -418,12 +438,25 @@ export default function App() {
         if (Array.isArray(data.data) && data.data.length > 0 && data.data[0]?.name) {
           setServices(data.data);
         }
-        // 命令回显
+        // 命令 / AI 脚本回显
         if (data.data?.stdout !== undefined) {
           const out = data.data.stdout?.trim() || '(无标准输出)';
           addLog(`[终端回显]\n${out}`, 'recv');
           if (data.data.stderr?.trim()) {
             addLog(`[错误输出]\n${data.data.stderr.trim()}`, 'err');
+          }
+          if (executingCodeId) {
+            setExecutedResults(prev => ({
+              ...prev,
+              [executingCodeId]: {
+                success: data.data?.success !== false,
+                stdout: out,
+                stderr: data.data?.stderr?.trim() || '',
+                time: new Date().toLocaleTimeString().slice(0, 5)
+              }
+            }));
+            setExecutingCodeId(null);
+            Alert.alert('AI 程序执行完毕', `执行状态：${data.data.success ? '✅ 成功' : '⚠️ 存在警告'}\n\n${out.slice(0, 260)}`);
           }
           return;
         }
@@ -581,6 +614,147 @@ export default function App() {
     addLog(`⌨️ 发送输入文本: "${remoteTextInput}"`, 'sent');
     setRemoteTextInput('');
     setIsTextModalOpen(false);
+  }
+
+  // ==================== AI 智能问诊与自主编程核心 ====================
+  async function sendAiQuestion(userPromptText = null) {
+    const query = userPromptText || aiInputPrompt;
+    if (!query || !query.trim() || isAiLoading) return;
+
+    const userMsgId = Date.now().toString();
+    const newUserMsg = {
+      id: userMsgId,
+      role: 'user',
+      text: query.trim(),
+      time: new Date().toLocaleTimeString().slice(0, 5)
+    };
+
+    setAiMessages(prev => [...prev, newUserMsg]);
+    setAiInputPrompt('');
+    setIsAiLoading(true);
+
+    try {
+      const deductionItems = (healthReport?.items || []).filter(i => i.status !== 'good');
+      const deductionText = deductionItems.length > 0
+        ? deductionItems.map(i => `  * [${i.status}] ${i.title}: ${i.desc}`).join('\n')
+        : '  * 系统当前健康检查全部良好，无明显故障项';
+
+      const systemPrompt = `你是一个顶级的 Windows 系统架构与自动化运维编程专家 (NetOps AI Diagnostician & Auto-Coder)。
+当前连接的主机诊断上下文如下：
+- 主机名: ${activeHostInfo?.hostname || 'Windows PC'}
+- 操作系统: ${sysInfo.osDisplayName || sysInfo.platform || 'Windows 11'}
+- 运行时间: ${sysInfo.uptime || '-'}
+- 实时负载: CPU ${cpu}%, 内存 ${memory}% (总物理内存 ${assetSpecs?.memoryGB || 16} GB)
+- 系统盘 (C:): 剩余 ${disk.free} / 总共 ${disk.total} (${disk.percent}% 占用)
+- 最近健康检查得分: ${healthReport?.score !== undefined ? healthReport.score : '未体检'} 分 (${healthReport?.grade || '待体检'})
+- 诊断注意/扣分项:
+${deductionText}
+
+你的职责：
+1. 结合当前这台电脑的真实环境与参数，分析运维人员提出的问题，给出 1~2 段精炼的根因诊断分析。
+2. 针对这台电脑，现场自主编写一段完备、安全、高效的 PowerShell 脚本（或 Batch / Python）用于修复或自动化运维。
+3. 必须在回答中使用标准 markdown 代码块格式提供可直接执行的完整脚本，例如：
+\`\`\`powershell
+# 针对性修复程序
+Write-Host ">>> 开始执行自愈修复..." -ForegroundColor Cyan
+try {
+    # 修复逻辑
+    Write-Host "[OK] 修复成功！" -ForegroundColor Green
+} catch {
+    Write-Host "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+}
+\`\`\`
+4. 语言风格：专业、精炼、安全第一，包含异常处理保护。`;
+
+      const reqMessages = [
+        { role: 'system', content: systemPrompt },
+        ...aiMessages.filter(m => m.role === 'user' || m.role === 'assistant').slice(-4).map(m => ({
+          role: m.role,
+          content: m.text + (m.code ? `\n\`\`\`${m.language || 'powershell'}\n${m.code}\n\`\`\`` : '')
+        })),
+        { role: 'user', content: query.trim() }
+      ];
+
+      const endpoint = `${aiBaseUrl.replace(/\/+$/, '')}/chat/completions`;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${aiApiKey}`
+        },
+        body: JSON.stringify({
+          model: aiModel,
+          messages: reqMessages,
+          temperature: 0.3,
+          max_tokens: 2000
+        })
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson?.error?.message || `AI 接口响应异常 HTTP ${res.status}`);
+      }
+
+      const resData = await res.json();
+      const aiContent = resData.choices?.[0]?.message?.content || '未能生成诊断结果。';
+
+      let extractedCode = null;
+      let extractedLang = 'powershell';
+      const codeBlockMatch = aiContent.match(/```(powershell|bash|cmd|bat|python)?\s*([\s\S]*?)```/i);
+      let cleanText = aiContent;
+
+      if (codeBlockMatch) {
+        extractedLang = (codeBlockMatch[1] || 'powershell').toLowerCase();
+        if (extractedLang === 'bat') extractedLang = 'cmd';
+        extractedCode = codeBlockMatch[2].trim();
+        cleanText = aiContent.replace(/```(powershell|bash|cmd|bat|python)?\s*[\s\S]*?```/gi, '').trim();
+      }
+
+      const aiMsgId = (Date.now() + 1).toString();
+      setAiMessages(prev => [
+        ...prev,
+        {
+          id: aiMsgId,
+          role: 'assistant',
+          text: cleanText || '已根据当前系统诊断为您生成如下针对性自愈程序：',
+          code: extractedCode,
+          language: extractedLang,
+          time: new Date().toLocaleTimeString().slice(0, 5)
+        }
+      ]);
+    } catch (err) {
+      setAiMessages(prev => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          text: `❌ AI 诊断请求失败: ${err.message}\n请检查网络或在右上角【设置】中配置有效的 DeepSeek / OpenAI API Key。`,
+          code: null,
+          time: new Date().toLocaleTimeString().slice(0, 5)
+        }
+      ]);
+    } finally {
+      setIsAiLoading(false);
+    }
+  }
+
+  async function executeAiGeneratedScript(msgId, script, language = 'powershell') {
+    if (!isConnected) {
+      Alert.alert('未连接电脑', '请先连接到目标主机，再下发执行 AI 生成的程序。');
+      return;
+    }
+    if (!script) return;
+
+    setExecutingCodeId(msgId);
+    setIsLogDrawerOpen(true);
+    addLog(`🚀 [AI 智诊] 开始在电脑上执行针对性程序 (${language})...`, 'sent');
+
+    try {
+      sendAgentRequest('ai_script_exec', { script, language });
+    } catch (err) {
+      addLog(`❌ [AI 智诊] 下发失败: ${err.message}`, 'err');
+      setExecutingCodeId(null);
+    }
   }
 
   // 过滤进程列表
@@ -959,7 +1133,200 @@ export default function App() {
           </View>
         )}
 
-        {/* ========== TAB 2: 🖥️ 远程桌面实时操控 (向日葵模式) ========== */}
+        {/* ========== TAB 2: 🤖 AI 智能问诊与自主编程自愈 (AI COPILOT) ========== */}
+        {currentTab === 'ai_copilot' && (
+          <View style={{ flex: 1 }}>
+            {/* AI 顶栏与状态看板 */}
+            <View style={styles.aiHeaderCard}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Text style={{ fontSize: 22 }}>🤖</Text>
+                  <View>
+                    <Text style={{ fontSize: 16, fontWeight: '800', color: '#FFF' }}>
+                      NetOps AI 智诊与编程中枢
+                    </Text>
+                    <Text style={{ fontSize: 11, color: '#94A3B8' }}>
+                      已关联当前主机指标 · DeepSeek 专家引擎
+                    </Text>
+                  </View>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 6 }}>
+                  <TouchableOpacity
+                    style={styles.aiPillBtn}
+                    onPress={() => setIsAiConfigModalOpen(true)}
+                  >
+                    <Text style={styles.aiPillText}>⚙️ 设置</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.aiPillBtn}
+                    onPress={() => setAiMessages([aiMessages[0]])}
+                  >
+                    <Text style={styles.aiPillText}>🧹 清空</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* 快速诊断预设提问胶囊 */}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 14 }}>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.aiChip, { borderColor: '#38BDF8', backgroundColor: 'rgba(56, 189, 248, 0.12)' }]}
+                    onPress={() => sendAiQuestion('请根据当前电脑最新的健康体检扣分项与异常指标，帮我分析问题并编写一段一键自愈修复 PowerShell 脚本。')}
+                  >
+                    <Text style={[styles.aiChipText, { color: '#38BDF8' }]}>⚡ 一键体检自愈 (自动读取扣分项写脚本)</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.aiChip}
+                    onPress={() => sendAiQuestion('分析当前 C 盘空间并编写一段安全深度清理 WinSxS 缓存、SoftwareDistribution 和临时垃圾文件的 PowerShell 脚本。')}
+                  >
+                    <Text style={styles.aiChipText}>🧹 C 盘空间深度安全瘦身</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.aiChip}
+                    onPress={() => sendAiQuestion('编写一段自动测试多个公共 DNS 延迟并为活跃网卡设置最优 DNS、同时重置 Winsock 协议栈的 PowerShell 脚本。')}
+                  >
+                    <Text style={styles.aiChipText}>🌐 网络与 DNS 延迟优化</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.aiChip}
+                    onPress={() => sendAiQuestion('编写一段自动化运行 SFC 和 DISM 并修复系统核心组件受损项的 PowerShell 脚本。')}
+                  >
+                    <Text style={styles.aiChipText}>🛡️ Windows 系统完整性自愈</Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            </View>
+
+            {/* AI 对话消息流 */}
+            <View style={{ gap: 14, marginBottom: 16 }}>
+              {aiMessages.map((msg) => {
+                const isUser = msg.role === 'user';
+                const result = executedResults[msg.id];
+                const isExecuting = executingCodeId === msg.id;
+
+                return (
+                  <View
+                    key={msg.id}
+                    style={[
+                      styles.aiMsgBubble,
+                      isUser ? styles.aiMsgUser : styles.aiMsgAssistant
+                    ]}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <Text style={[styles.aiMsgRole, isUser && { color: '#38BDF8' }]}>
+                        {isUser ? '👤 您' : '🤖 NetOps AI 专家'}
+                      </Text>
+                      <Text style={{ fontSize: 10, color: '#64748B' }}>{msg.time}</Text>
+                    </View>
+
+                    {/* 文本内容 */}
+                    <Text style={styles.aiMsgText}>{msg.text}</Text>
+
+                    {/* 生成的可执行代码卡片 */}
+                    {msg.code && (
+                      <View style={styles.aiCodeCard}>
+                        <View style={styles.aiCodeHeader}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={{ fontSize: 12 }}>📝</Text>
+                            <Text style={styles.aiCodeLang}>
+                              {(msg.language || 'PowerShell').toUpperCase()} 针对性修复程序
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            onPress={() => {
+                              setCustomCmd(msg.code);
+                              Alert.alert('已载入', '代码已复制到管控中心命令行！');
+                            }}
+                          >
+                            <Text style={styles.aiCodeActionText}>📋 提取代码</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* 代码展示区 */}
+                        <ScrollView horizontal style={styles.aiCodeBox} nestedScrollEnabled={true}>
+                          <Text style={styles.aiCodeContent}>{msg.code}</Text>
+                        </ScrollView>
+
+                        {/* 一键执行操作条 */}
+                        <View style={styles.aiCodeFooter}>
+                          <TouchableOpacity
+                            style={[styles.btn, styles.btnPrimary, { flex: 1 }]}
+                            onPress={() => executeAiGeneratedScript(msg.id, msg.code, msg.language)}
+                            disabled={isExecuting}
+                          >
+                            {isExecuting ? (
+                              <ActivityIndicator size="small" color="#0A0F1D" />
+                            ) : (
+                              <Text style={styles.btnText}>🚀 一键在主机执行此程序</Text>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* 执行结果回显卡片 */}
+                        {result && (
+                          <View style={[styles.aiResultCard, result.success ? styles.aiResultSuccess : styles.aiResultWarn]}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                              <Text style={[styles.aiResultTitle, { color: result.success ? '#10B981' : '#F59E0B' }]}>
+                                {result.success ? '✅ 程序执行完成' : '⚠️ 执行结束 (带警告)'}
+                              </Text>
+                              <Text style={{ fontSize: 10, color: '#64748B' }}>{result.time}</Text>
+                            </View>
+                            <Text style={styles.aiResultOutput} numberOfLines={8}>
+                              {result.stdout || result.stderr || '(无输出)'}
+                            </Text>
+                            <TouchableOpacity
+                              style={{ marginTop: 8, alignSelf: 'flex-end' }}
+                              onPress={triggerHealthCheck}
+                            >
+                              <Text style={{ fontSize: 12, color: '#38BDF8', fontWeight: '700' }}>
+                                🔄 重新体检验证自愈效果 ➔
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+
+              {isAiLoading && (
+                <View style={[styles.aiMsgBubble, styles.aiMsgAssistant, { flexDirection: 'row', alignItems: 'center', gap: 10 }]}>
+                  <ActivityIndicator size="small" color="#38BDF8" />
+                  <Text style={{ fontSize: 13, color: '#94A3B8' }}>
+                    AI 正在结合主机实时指标进行深度诊断与程序编写...
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            {/* 提问输入框 */}
+            <View style={styles.aiInputRow}>
+              <TextInput
+                style={styles.aiInputField}
+                value={aiInputPrompt}
+                onChangeText={setAiInputPrompt}
+                placeholder="描述电脑问题（如：C盘满了/断网/服务崩溃）..."
+                placeholderTextColor="#64748B"
+                multiline={false}
+                onSubmitEditing={() => sendAiQuestion()}
+              />
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, { height: 46, paddingHorizontal: 16 }]}
+                onPress={() => sendAiQuestion()}
+                disabled={isAiLoading || !aiInputPrompt.trim()}
+              >
+                {isAiLoading ? (
+                  <ActivityIndicator size="small" color="#0A0F1D" />
+                ) : (
+                  <Text style={styles.btnText}>问诊编程</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* ========== TAB 3: 🖥️ 远程桌面实时操控 (向日葵模式) ========== */}
         {currentTab === 'remote' && (
           <View style={{ flex: 1 }}>
             {!isConnected ? (
@@ -1423,9 +1790,9 @@ export default function App() {
       <View style={styles.bottomNav}>
         {[
           { id: 'dashboard', icon: '📊', label: '仪表盘' },
+          { id: 'ai_copilot', icon: '🤖', label: 'AI 智诊' },
           { id: 'remote', icon: '🖥️', label: '远程桌面' },
           { id: 'repairs', icon: '🛠️', label: '一键维护' },
-          { id: 'control', icon: '⚡', label: '管控中心' },
           { id: 'devices', icon: '🌐', label: '机房设备' },
         ].map((tab) => {
           const isActive = currentTab === tab.id;
@@ -1441,6 +1808,73 @@ export default function App() {
           );
         })}
       </View>
+
+      {/* AI 模型与 API 配置 Modal */}
+      <Modal
+        visible={isAiConfigModalOpen}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setIsAiConfigModalOpen(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>⚙️ AI 智诊与编程引擎配置</Text>
+            <Text style={styles.modalMessage}>
+              默认已预置 DeepSeek 专家大模型，支持切换为自建 Ollama 或 OpenAI 兼容端点：
+            </Text>
+
+            <Text style={styles.inputLabel}>API Base URL (接口地址):</Text>
+            <TextInput
+              style={[styles.cmdInput, { marginBottom: 10 }]}
+              value={aiBaseUrl}
+              onChangeText={setAiBaseUrl}
+              placeholder="https://api.deepseek.com"
+              placeholderTextColor="#64748B"
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.inputLabel}>Model Name (模型标识):</Text>
+            <TextInput
+              style={[styles.cmdInput, { marginBottom: 10 }]}
+              value={aiModel}
+              onChangeText={setAiModel}
+              placeholder="deepseek-chat"
+              placeholderTextColor="#64748B"
+              autoCapitalize="none"
+            />
+
+            <Text style={styles.inputLabel}>API Key (密钥):</Text>
+            <TextInput
+              style={[styles.cmdInput, { marginBottom: 16 }]}
+              value={aiApiKey}
+              onChangeText={setAiApiKey}
+              placeholder="sk-..."
+              placeholderTextColor="#64748B"
+              secureTextEntry={true}
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnSecondary, { flex: 1 }]}
+                onPress={() => setIsAiConfigModalOpen(false)}
+              >
+                <Text style={[styles.btnText, { color: '#F8FAFC' }]}>保存设置</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.btn, styles.btnPrimary, { flex: 1 }]}
+                onPress={() => {
+                  setAiBaseUrl('https://api.deepseek.com');
+                  setAiModel('deepseek-chat');
+                  setAiApiKey('sk-c251ba28ec4f4443be9b4edc1e3d1fed');
+                  Alert.alert('已重置', '已恢复为官方 DeepSeek 推荐配置！');
+                }}
+              >
+                <Text style={[styles.btnText, { color: '#0A0F1D' }]}>恢复默认配置</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* 远程打字输入 Modal */}
       <Modal
@@ -2229,5 +2663,158 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#CBD5E1',
     fontWeight: '700',
+  },
+  // AI 智诊编程专属样式
+  aiHeaderCard: {
+    backgroundColor: '#131E32',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+  },
+  aiPillBtn: {
+    backgroundColor: '#0A0F1D',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  aiPillText: {
+    fontSize: 11,
+    color: '#CBD5E1',
+    fontWeight: '700',
+  },
+  aiChip: {
+    backgroundColor: '#0A0F1D',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  aiChipText: {
+    fontSize: 12,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  aiMsgBubble: {
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+  },
+  aiMsgUser: {
+    backgroundColor: '#131E32',
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    marginLeft: 24,
+  },
+  aiMsgAssistant: {
+    backgroundColor: '#0F172A',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    marginRight: 24,
+  },
+  aiMsgRole: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#10B981',
+  },
+  aiMsgText: {
+    fontSize: 13,
+    color: '#F8FAFC',
+    lineHeight: 20,
+  },
+  aiCodeCard: {
+    backgroundColor: '#070C18',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+    marginTop: 12,
+    overflow: 'hidden',
+  },
+  aiCodeHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#0A0F1D',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  aiCodeLang: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#38BDF8',
+  },
+  aiCodeActionText: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '600',
+  },
+  aiCodeBox: {
+    padding: 12,
+    maxHeight: 220,
+  },
+  aiCodeContent: {
+    fontSize: 12,
+    color: '#7DD3FC',
+    fontFamily: MONOSPACE_FONT,
+    lineHeight: 18,
+  },
+  aiCodeFooter: {
+    padding: 10,
+    backgroundColor: '#0A0F1D',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 255, 255, 0.06)',
+  },
+  aiResultCard: {
+    margin: 10,
+    marginTop: 0,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  aiResultSuccess: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  aiResultWarn: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+  },
+  aiResultTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  aiResultOutput: {
+    fontSize: 11,
+    color: '#CBD5E1',
+    fontFamily: MONOSPACE_FONT,
+    lineHeight: 16,
+  },
+  aiInputRow: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: '#131E32',
+    padding: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    marginTop: 8,
+  },
+  aiInputField: {
+    flex: 1,
+    backgroundColor: '#0A0F1D',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    color: '#F8FAFC',
+    fontSize: 13,
+  },
+  inputLabel: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginBottom: 4,
+    fontWeight: '600',
   },
 });

@@ -5,10 +5,14 @@ dist/
 dist-android-verify/
 dist-android-verify-no-usb/
 web-build/
-/android
-/ios
+android/
+ios/
 assets/agent/
+assets/agent/**
 assets/tools/
+assets/tools/**
+*.exe
+*.dll
 *.jks
 *.p12
 *.pem

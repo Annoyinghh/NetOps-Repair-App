@@ -89,6 +89,52 @@ function startDetachedCommand(command) {
 }
 
 /**
+ * 执行 AI 动态编写的修复程序 (PowerShell / Batch / Python)
+ */
+async function executeAiScript(script, language = 'powershell', onProgress = () => {}) {
+  if (!script || !script.trim()) {
+    return { success: false, stdout: '', stderr: '脚本内容为空' };
+  }
+
+  const tempDir = os.tmpdir();
+  const ext = language === 'batch' || language === 'cmd' ? '.bat' : language === 'python' ? '.py' : '.ps1';
+  const scriptPath = path.join(tempDir, `netops_ai_${Date.now()}${ext}`);
+
+  try {
+    // 加上 UTF-8 BOM 头，确保 Windows PowerShell 5.1/7.x 完美解析中文字符串
+    fsSync.writeFileSync(scriptPath, '\uFEFF' + script, 'utf8');
+    onProgress(`[AI 引擎] 临时程序已部署 (${language}): ${scriptPath}`);
+
+    let cmdToRun = '';
+    if (ext === '.bat') {
+      cmdToRun = `cmd.exe /c "${scriptPath}"`;
+    } else if (ext === '.py') {
+      cmdToRun = `python "${scriptPath}"`;
+    } else {
+      cmdToRun = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`;
+    }
+
+    const result = await runCmd(cmdToRun, 60000);
+    
+    try { fsSync.unlinkSync(scriptPath); } catch {}
+
+    return {
+      success: result.success,
+      stdout: result.stdout || '(脚本执行完毕，无输出)',
+      stderr: result.stderr,
+      error: result.error
+    };
+  } catch (err) {
+    try { fsSync.unlinkSync(scriptPath); } catch {}
+    return {
+      success: false,
+      stdout: '',
+      stderr: err.message
+    };
+  }
+}
+
+/**
  * 检测管理员权限
  */
 async function checkAdminPrivileges() {
@@ -1508,6 +1554,16 @@ async function startServer() {
             } else if (params?.key) {
               sendRemoteInput(`KEY:${params.key}`);
             }
+            respond('success', { ok: true });
+            break;
+
+          // ==================== AI 智能诊断编程与自动化执行 ====================
+          case 'ai_script_exec':
+            respond('pending', { message: '正在下发并执行 AI 针对性修复程序...' });
+            onProgress(`[AI 引擎] 正在写入并启动修复程序 (${params?.language || 'powershell'})...`);
+            const aiExecResult = await executeAiScript(params?.script, params?.language, onProgress);
+            respond('success', aiExecResult);
+            break;
             respond('success', { ok: true });
             break;
 
