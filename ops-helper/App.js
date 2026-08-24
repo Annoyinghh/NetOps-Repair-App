@@ -95,6 +95,7 @@ export default function App() {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [zoomScale, setZoomScale] = useState(1.0); // 1.0, 1.5, 2.0
   const [isLandscape, setIsLandscape] = useState(false);
+  const lastFrameTimeRef = useRef(0);
 
   // AI 智能诊断与自主编程中枢 (AI Copilot & Auto-Coder)
   const [aiMessages, setAiMessages] = useState([
@@ -399,11 +400,21 @@ export default function App() {
     // 2.1 处理 push desktop_frame (向日葵远程桌面帧)
     if (data.type === 'push' && data.event === 'desktop_frame') {
       if (data.data?.frame) {
-        setDesktopFrame(data.data.frame);
+        const now = Date.now();
+        // 限制最高 12 FPS 渲染更新，彻底消除高频重绘闪烁与触控卡顿
+        if (now - lastFrameTimeRef.current >= 80) {
+          lastFrameTimeRef.current = now;
+          setDesktopFrame(data.data.frame);
+        }
         if (data.data.screenWidth && data.data.screenHeight) {
-          setDesktopScreenSize({
-            width: data.data.screenWidth,
-            height: data.data.screenHeight,
+          setDesktopScreenSize(prev => {
+            if (prev.width === data.data.screenWidth && prev.height === data.data.screenHeight) {
+              return prev;
+            }
+            return {
+              width: data.data.screenWidth,
+              height: data.data.screenHeight,
+            };
           });
         }
       }
@@ -1455,6 +1466,7 @@ try {
                         source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
                         style={styles.desktopScreenImage}
                         resizeMode="contain"
+                        fadeDuration={0}
                       />
                     </TouchableOpacity>
                   ) : (
@@ -2052,6 +2064,7 @@ try {
                       source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
                       style={{ width: '100%', height: '100%' }}
                       resizeMode="contain"
+                      fadeDuration={0}
                     />
                   </TouchableOpacity>
                 ) : (

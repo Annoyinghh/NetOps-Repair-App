@@ -8,12 +8,26 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
-using System.Windows.Forms;
 
 namespace NetOps.Remote
 {
     public static class Program
     {
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool CloseDesktop(IntPtr hDesktop);
+
+        [DllImport("user32.dll")]
+        public static extern bool SetProcessDPIAware();
+
+        [DllImport("user32.dll")]
+        public static extern int GetSystemMetrics(int nIndex);
+
         [DllImport("user32.dll")]
         public static extern bool SetCursorPos(int x, int y);
 
@@ -27,33 +41,33 @@ namespace NetOps.Remote
         public static extern bool LockWorkStation();
 
         [DllImport("user32.dll")]
-        public static extern IntPtr GetDesktopWindow();
-
-        [DllImport("user32.dll")]
         public static extern IntPtr GetDC(IntPtr hWnd);
 
         [DllImport("user32.dll")]
         public static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
         [DllImport("gdi32.dll")]
-        public static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+        public static extern IntPtr CreateCompatibleDC(IntPtr hdc);
 
         [DllImport("gdi32.dll")]
-        public static extern IntPtr CreateCompatibleBitmap(IntPtr hDC, int nWidth, int nHeight);
+        public static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int nWidth, int nHeight);
 
         [DllImport("gdi32.dll")]
-        public static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+        public static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        public static extern bool BitBlt(IntPtr hdcDest, int xDest, int yDest, int wDest, int hDest, IntPtr hdcSrc, int xSrc, int ySrc, int rop);
 
         [DllImport("gdi32.dll")]
-        public static extern bool BitBlt(IntPtr hObject, int nXDest, int nYDest, int nWidth, int nHeight, IntPtr hObjectSource, int nXSrc, int nYSrc, int dwRop);
-
-        [DllImport("gdi32.dll")]
-        public static extern bool DeleteDC(IntPtr hDC);
+        public static extern bool DeleteDC(IntPtr hdc);
 
         [DllImport("gdi32.dll")]
         public static extern bool DeleteObject(IntPtr hObject);
 
         public const int SRCCOPY = 0x00CC0020;
+        public const int SM_CXSCREEN = 0;
+        public const int SM_CYSCREEN = 1;
+        public const uint DESKTOP_ALL = 0x01FF;
 
         public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         public const uint MOUSEEVENTF_LEFTUP = 0x0004;
@@ -80,6 +94,12 @@ namespace NetOps.Remote
 
         public static void Main(string[] args)
         {
+            try
+            {
+                SetProcessDPIAware();
+            }
+            catch { }
+
             int port = 3002;
             if (args.Length >= 1) int.TryParse(args[0], out port);
 
@@ -92,7 +112,9 @@ namespace NetOps.Remote
                 while (_running)
                 {
                     TcpClient client = _listener.AcceptTcpClient();
-                    ThreadPool.QueueUserWorkItem(HandleClient, client);
+                    Thread clientThread = new Thread(() => HandleClient(client));
+                    clientThread.IsBackground = true;
+                    clientThread.Start();
                 }
             }
             catch (Exception ex)
@@ -101,34 +123,50 @@ namespace NetOps.Remote
             }
         }
 
-        private static Bitmap CaptureScreenBitBlt(int w, int h)
+        private static Bitmap CaptureScreen(int w, int h)
         {
+            IntPtr hDesk = IntPtr.Zero;
+            try
+            {
+                hDesk = OpenInputDesktop(0, false, DESKTOP_ALL);
+                if (hDesk != IntPtr.Zero)
+                {
+                    SetThreadDesktop(hDesk);
+                }
+            }
+            catch { }
+
             IntPtr hdcSrc = GetDC(IntPtr.Zero);
             IntPtr hdcDest = CreateCompatibleDC(hdcSrc);
             IntPtr hBitmap = CreateCompatibleBitmap(hdcSrc, w, h);
             IntPtr hOld = SelectObject(hdcDest, hBitmap);
 
             BitBlt(hdcDest, 0, 0, w, h, hdcSrc, 0, 0, SRCCOPY);
+
             SelectObject(hdcDest, hOld);
             DeleteDC(hdcDest);
             ReleaseDC(IntPtr.Zero, hdcSrc);
+
+            if (hDesk != IntPtr.Zero)
+            {
+                try { CloseDesktop(hDesk); } catch { }
+            }
 
             Bitmap bmp = Image.FromHbitmap(hBitmap);
             DeleteObject(hBitmap);
             return bmp;
         }
 
-        private static void HandleClient(object state)
+        private static void HandleClient(TcpClient client)
         {
-            TcpClient client = (TcpClient)state;
             client.NoDelay = true;
             client.SendBufferSize = 1024 * 1024;
             NetworkStream stream = client.GetStream();
 
             int targetWidth = 960;
             int targetHeight = 540;
-            int quality = 60;
-            int fps = 20;
+            int quality = 50;
+            int fps = 15;
 
             // 启动命令读取线程
             Thread readThread = new Thread(() =>
@@ -165,8 +203,12 @@ namespace NetOps.Remote
             { IsBackground = true };
             readThread.Start();
 
-            Rectangle bounds = Screen.PrimaryScreen.Bounds;
-            byte[] initHeader = Encoding.UTF8.GetBytes(string.Format("INIT:{0}:{1}\n", bounds.Width, bounds.Height));
+            int screenW = GetSystemMetrics(SM_CXSCREEN);
+            int screenH = GetSystemMetrics(SM_CYSCREEN);
+            if (screenW <= 0) screenW = 1920;
+            if (screenH <= 0) screenH = 1080;
+
+            byte[] initHeader = Encoding.UTF8.GetBytes(string.Format("INIT:{0}:{1}\n", screenW, screenH));
             try
             {
                 stream.Write(initHeader, 0, initHeader.Length);
@@ -185,11 +227,15 @@ namespace NetOps.Remote
 
                 try
                 {
-                    bounds = Screen.PrimaryScreen.Bounds;
-                    using (Bitmap screenBmp = CaptureScreenBitBlt(bounds.Width, bounds.Height))
+                    int sw = GetSystemMetrics(SM_CXSCREEN);
+                    int sh = GetSystemMetrics(SM_CYSCREEN);
+                    if (sw <= 0) sw = 1920;
+                    if (sh <= 0) sh = 1080;
+
+                    using (Bitmap screenBmp = CaptureScreen(sw, sh))
                     {
-                        int outW = targetWidth > 0 && targetWidth < bounds.Width ? targetWidth : bounds.Width;
-                        int outH = targetHeight > 0 && targetHeight < bounds.Height ? targetHeight : bounds.Height;
+                        int outW = targetWidth > 0 && targetWidth < sw ? targetWidth : sw;
+                        int outH = targetHeight > 0 && targetHeight < sh ? targetHeight : sh;
 
                         using (Bitmap outBmp = new Bitmap(outW, outH, PixelFormat.Format24bppRgb))
                         {
@@ -238,6 +284,18 @@ namespace NetOps.Remote
         private static void HandleCommand(string cmd)
         {
             if (string.IsNullOrEmpty(cmd)) return;
+
+            IntPtr hDesk = IntPtr.Zero;
+            try
+            {
+                hDesk = OpenInputDesktop(0, false, DESKTOP_ALL);
+                if (hDesk != IntPtr.Zero)
+                {
+                    SetThreadDesktop(hDesk);
+                }
+            }
+            catch { }
+
             string[] parts = cmd.Split(':');
             string action = parts[0];
 
@@ -255,24 +313,32 @@ namespace NetOps.Remote
                 bool isDouble = parts.Length >= 5 && parts[4] == "1";
 
                 SetCursorPos(x, y);
-                Thread.Sleep(5);
+                Thread.Sleep(10);
 
                 if (btn == "left")
                 {
-                    mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, UIntPtr.Zero);
+                    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(25);
+                    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
                     if (isDouble)
                     {
-                        Thread.Sleep(60);
-                        mouse_event(MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_LEFTUP, (uint)x, (uint)y, 0, UIntPtr.Zero);
+                        Thread.Sleep(70);
+                        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+                        Thread.Sleep(25);
+                        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
                     }
                 }
                 else if (btn == "right")
                 {
-                    mouse_event(MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_RIGHTUP, (uint)x, (uint)y, 0, UIntPtr.Zero);
+                    mouse_event(MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(25);
+                    mouse_event(MOUSEEVENTF_RIGHTUP, 0, 0, 0, UIntPtr.Zero);
                 }
                 else if (btn == "middle")
                 {
-                    mouse_event(MOUSEEVENTF_MIDDLEDOWN | MOUSEEVENTF_MIDDLEUP, (uint)x, (uint)y, 0, UIntPtr.Zero);
+                    mouse_event(MOUSEEVENTF_MIDDLEDOWN, 0, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(25);
+                    mouse_event(MOUSEEVENTF_MIDDLEUP, 0, 0, 0, UIntPtr.Zero);
                 }
             }
             else if (action == "DOWN" && parts.Length >= 2)
@@ -295,7 +361,7 @@ namespace NetOps.Remote
             else if (action == "TEXT" && parts.Length >= 2)
             {
                 string rawText = Encoding.UTF8.GetString(Convert.FromBase64String(parts[1]));
-                SendKeys.SendWait(rawText);
+                System.Windows.Forms.SendKeys.SendWait(rawText);
             }
             else if (action == "KEY" && parts.Length >= 2)
             {
@@ -303,12 +369,14 @@ namespace NetOps.Remote
                 if (key == "Win")
                 {
                     keybd_event(VK_LWIN, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
                     keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 }
                 else if (key == "WinD")
                 {
                     keybd_event(VK_LWIN, 0, 0, UIntPtr.Zero);
                     keybd_event(VK_D, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
                     keybd_event(VK_D, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                     keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 }
@@ -325,6 +393,7 @@ namespace NetOps.Remote
                     keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
                     keybd_event(VK_SHIFT, 0, 0, UIntPtr.Zero);
                     keybd_event(VK_ESCAPE, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
                     keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                     keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                     keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -336,18 +405,26 @@ namespace NetOps.Remote
                 else if (key == "Enter")
                 {
                     keybd_event(VK_RETURN, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
                     keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 }
                 else if (key == "Esc")
                 {
                     keybd_event(VK_ESCAPE, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
                     keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 }
                 else if (key == "Backspace")
                 {
                     keybd_event(VK_BACK, 0, 0, UIntPtr.Zero);
+                    Thread.Sleep(20);
                     keybd_event(VK_BACK, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
                 }
+            }
+
+            if (hDesk != IntPtr.Zero)
+            {
+                try { CloseDesktop(hDesk); } catch { }
             }
         }
 

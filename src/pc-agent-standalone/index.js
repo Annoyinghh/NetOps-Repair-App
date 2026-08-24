@@ -19,7 +19,8 @@ const fsSync = require('fs');
 const path = require('path');
 let embeddedRemoteHelperBase64 = '';
 try {
-  embeddedRemoteHelperBase64 = require('./remoteHelperBinary');
+  const binaryMod = require('./remoteHelperBinary');
+  embeddedRemoteHelperBase64 = typeof binaryMod === 'string' ? binaryMod : (binaryMod?.base64 || '');
 } catch {}
 
 // ==================== 配置 ====================
@@ -1152,7 +1153,7 @@ function ensureRemoteHelperRunning() {
     const helperExe = path.join(tempDir, 'NetOps_RemoteHelper.exe');
 
     try {
-      if (embeddedRemoteHelperBase64 && (!fsSync.existsSync(helperExe) || fsSync.statSync(helperExe).size === 0)) {
+      if (embeddedRemoteHelperBase64) {
         fsSync.writeFileSync(helperExe, Buffer.from(embeddedRemoteHelperBase64, 'base64'));
       }
     } catch (e) {
