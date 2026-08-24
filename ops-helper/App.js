@@ -619,8 +619,8 @@ export default function App() {
     setIsTextModalOpen(false);
   }
 
-  // ==================== AI 智能问诊与自主编程核心 ====================
-  async function sendAiQuestion(userPromptText = null) {
+  // ==================== AI 智能问诊与自主编程自愈核心 ====================
+  async function sendAiQuestion(userPromptText = null, autoExecute = false) {
     const query = userPromptText || aiInputPrompt;
     if (!query || !query.trim() || isAiLoading) return;
 
@@ -725,6 +725,14 @@ try {
           time: new Date().toLocaleTimeString().slice(0, 5)
         }
       ]);
+
+      // 若为全自动模式，AI 自动下发并在电脑上执行
+      if (extractedCode && autoExecute) {
+        addLog(`🤖 [AI 自愈] AI 已自主完成编程，正在全自动下发并在电脑上执行修复...`, 'sent');
+        setTimeout(() => {
+          executeAiGeneratedScript(aiMsgId, extractedCode, extractedLang);
+        }, 500);
+      }
     } catch (err) {
       setAiMessages(prev => [
         ...prev,
@@ -739,6 +747,26 @@ try {
     } finally {
       setIsAiLoading(false);
     }
+  }
+
+  async function runAutonomousAiSelfHealing() {
+    if (!isConnected) {
+      Alert.alert('未连接电脑', '请先连接到目标电脑，再启动 AI 全自动自愈修复。');
+      return;
+    }
+    setCurrentTab('ai_copilot');
+    addLog('🤖 [AI 自愈] 正在聚合系统指标并调用 DeepSeek 编写全套自愈脚本...', 'sent');
+    const deductionItems = (healthReport?.items || []).filter(i => i.status !== 'good');
+    const query = `【AI 全自动自愈流水线任务】
+请针对当前电脑的体检扣分项（${deductionItems.map(i => i.title).join('、') || '系统垃圾与网络延迟'}）和系统现状，现场编写一段全自动一键自愈修复 PowerShell 脚本。
+包含：
+1. 深度安全清理系统临时文件、WinSxS 缓存、SoftwareDistribution 下载缓存。
+2. 刷新 DNS 缓存、重置 Winsock 协议栈、优化网卡 DNS 解析。
+3. 检查并自动重启异常未启动的关键 Windows 基础服务。
+4. 修复系统核心组件健康状态。
+必须使用 \`\`\`powershell ... \`\`\` 完整包裹，并输出详细步骤与统计！`;
+
+    sendAiQuestion(query, true);
   }
 
   async function executeAiGeneratedScript(msgId, script, language = 'powershell') {
@@ -1169,14 +1197,38 @@ try {
                 </View>
               </View>
 
+              {/* 🤖 一键 AI 全自动诊断与自愈闭环按钮 */}
+              <TouchableOpacity
+                activeOpacity={0.88}
+                style={[styles.aiAutoHealBanner, { marginTop: 12, marginBottom: 4 }]}
+                onPress={runAutonomousAiSelfHealing}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                    <View style={styles.aiBannerIconBox}>
+                      <Text style={{ fontSize: 20 }}>🤖</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.aiBannerTitle}>一键 AI 自动诊断并全自动执行自愈</Text>
+                      <Text style={styles.aiBannerSub}>
+                        AI 自动感知指标 ➔ 现场编程 ➔ 自动下发执行 ➔ 闭环复检
+                      </Text>
+                    </View>
+                  </View>
+                  <View style={styles.aiBannerBtn}>
+                    <Text style={styles.aiBannerBtnText}>开始自愈 ➔</Text>
+                  </View>
+                </View>
+              </TouchableOpacity>
+
               {/* 快速诊断预设提问胶囊 */}
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 14 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity
                     style={[styles.aiChip, { borderColor: '#38BDF8', backgroundColor: 'rgba(56, 189, 248, 0.12)' }]}
                     onPress={() => sendAiQuestion('请根据当前电脑最新的健康体检扣分项与异常指标，帮我分析问题并编写一段一键自愈修复 PowerShell 脚本。')}
                   >
-                    <Text style={[styles.aiChipText, { color: '#38BDF8' }]}>⚡ 一键体检自愈 (自动读取扣分项写脚本)</Text>
+                    <Text style={[styles.aiChipText, { color: '#38BDF8' }]}>⚡ 生成体检自愈代码</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.aiChip}
@@ -3051,5 +3103,45 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#E2E8F0',
+  },
+  // AI 自愈流水线 Banner
+  aiAutoHealBanner: {
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1.5,
+    borderColor: '#0284C7',
+    marginBottom: 12,
+  },
+  aiBannerIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: '#0369A1',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  aiBannerTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#38BDF8',
+    marginBottom: 2,
+  },
+  aiBannerSub: {
+    fontSize: 11,
+    color: '#94A3B8',
+    lineHeight: 15,
+  },
+  aiBannerBtn: {
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginLeft: 6,
+  },
+  aiBannerBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#FFF',
   },
 });
