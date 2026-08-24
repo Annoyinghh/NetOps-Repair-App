@@ -15,9 +15,12 @@ const { WebSocketServer } = require('ws');
 const os = require('os');
 const { exec, execFile, spawn, execSync } = require('child_process');
 const crypto = require('crypto');
-const fs = require('fs/promises');
 const fsSync = require('fs');
 const path = require('path');
+let embeddedRemoteHelperBase64 = '';
+try {
+  embeddedRemoteHelperBase64 = require('./remoteHelperBinary');
+} catch {}
 
 // ==================== 配置 ====================
 const DEFAULT_PORT = 3001;
@@ -1140,46 +1143,46 @@ function ensureRemoteHelperRunning() {
       return reject(new Error('远程桌面仅支持 Windows 系统。'));
     }
 
-    const searchDirs = [
-      path.dirname(process.execPath),
-      process.cwd(),
-      __dirname,
-      'd:\\Project\\netops-repair\\src\\pc-agent-standalone'
-    ];
-    let helperExe = null;
-    for (const d of searchDirs) {
-      const candidate = path.join(d, 'RemoteHelper.exe');
-      if (fsSync.existsSync(candidate)) {
-        helperExe = candidate;
-        break;
-      }
-    }
-
-    if (!helperExe) {
-      try {
-        const outPath = path.join(path.dirname(process.execPath), 'RemoteHelper.exe');
-        for (const d of searchDirs) {
-          const csCandidate = path.join(d, 'RemoteHelper.cs');
-          if (fsSync.existsSync(csCandidate)) {
-            execSync(`C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /target:exe /out:"${outPath}" /optimize+ /platform:x64 "${csCandidate}"`);
-            helperExe = outPath;
-            break;
-          }
-        }
-      } catch (e) {
-        return reject(new Error('无法自动编译远程桌面组件: ' + e.message));
-      }
-    }
-
-    if (!helperExe) {
-      return reject(new Error('未找到 RemoteHelper.exe 远程桌面组件。'));
-    }
-
     if (remoteHelperProc && !remoteHelperProc.killed) {
       return resolve();
     }
 
-    remoteHelperProc = spawn(helperExe, ['3002'], {
+    // 优先释放到隐藏临时目录，实现真正的单文件免附带运行
+    const tempDir = os.tmpdir();
+    const helperExe = path.join(tempDir, 'NetOps_RemoteHelper.exe');
+
+    try {
+      if (embeddedRemoteHelperBase64 && (!fsSync.existsSync(helperExe) || fsSync.statSync(helperExe).size === 0)) {
+        fsSync.writeFileSync(helperExe, Buffer.from(embeddedRemoteHelperBase64, 'base64'));
+      }
+    } catch (e) {
+      console.error('[Remote] 写入临时 Helper 失败:', e.message);
+    }
+
+    let finalExe = fsSync.existsSync(helperExe) ? helperExe : null;
+
+    // Fallback: 如果 temp 失败，搜索同级目录或自动编译
+    if (!finalExe) {
+      const searchDirs = [
+        path.dirname(process.execPath),
+        process.cwd(),
+        __dirname,
+        'd:\\Project\\netops-repair\\src\\pc-agent-standalone'
+      ];
+      for (const d of searchDirs) {
+        const candidate = path.join(d, 'RemoteHelper.exe');
+        if (fsSync.existsSync(candidate)) {
+          finalExe = candidate;
+          break;
+        }
+      }
+    }
+
+    if (!finalExe) {
+      return reject(new Error('未能准备好远程桌面组件。'));
+    }
+
+    remoteHelperProc = spawn(finalExe, ['3002'], {
       stdio: ['pipe', 'pipe', 'inherit'],
       windowsHide: true
     });
@@ -1210,7 +1213,7 @@ function startRemoteStreaming(ws, options = {}) {
   }
 
   ensureRemoteHelperRunning().then(() => {
-    remoteTcpClient = net.createConnection({ port: 3002 }, () => {
+    remoteTcpClient = net.createConnection(3002, '127.0.0.1', () => {
       console.log('[Remote] 📱 已接通远程桌面推流通道');
       const w = options.width || 960;
       const h = options.height || 540;
@@ -1296,7 +1299,7 @@ function sendRemoteInput(cmd) {
     remoteTcpClient.write(cmd.trim() + '\n');
   } else {
     ensureRemoteHelperRunning().then(() => {
-      const client = net.createConnection({ port: 3002 }, () => {
+      const client = net.createConnection(3002, '127.0.0.1', () => {
         client.write(cmd.trim() + '\n');
         setTimeout(() => client.end(), 80);
       });
