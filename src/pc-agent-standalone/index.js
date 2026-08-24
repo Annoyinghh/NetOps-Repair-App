@@ -17,6 +17,22 @@ const { exec, execFile, spawn, execSync } = require('child_process');
 const crypto = require('crypto');
 const fsSync = require('fs');
 const path = require('path');
+
+// 忽略管道断开与标准流异常，确保脱离终端/系统后台静默运行时绝不崩溃
+if (process.stdout) process.stdout.on('error', () => {});
+if (process.stderr) process.stderr.on('error', () => {});
+if (process.stdin) process.stdin.on('error', () => {});
+
+process.on('uncaughtException', (err) => {
+  try { console.error('[Uncaught]', err); } catch {}
+});
+process.on('unhandledRejection', (err) => {
+  try { console.error('[UnhandledRejection]', err); } catch {}
+});
+
+// 维持事件循环活跃，防止后台无控制台时进程自动退出
+setInterval(() => {}, 1000 * 60 * 60);
+
 let embeddedRemoteHelperBase64 = '';
 try {
   const binaryMod = require('./remoteHelperBinary');

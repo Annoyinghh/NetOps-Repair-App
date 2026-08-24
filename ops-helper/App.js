@@ -15,9 +15,49 @@ import {
   Modal,
   Image,
   Dimensions,
+  PanResponder,
 } from 'react-native';
 import * as Network from 'expo-network';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// ==================== 双缓冲零闪烁远程桌面视口组件 ====================
+const DoubleBufferedScreenImage = React.memo(({ frame, style, resizeMode = 'contain' }) => {
+  const [activeBuffer, setActiveBuffer] = useState('a');
+  const bufferARef = useRef(frame);
+  const bufferBRef = useRef(null);
+
+  useEffect(() => {
+    if (!frame) return;
+    if (activeBuffer === 'a') {
+      bufferBRef.current = frame;
+      setActiveBuffer('b');
+    } else {
+      bufferARef.current = frame;
+      setActiveBuffer('a');
+    }
+  }, [frame]);
+
+  return (
+    <View style={[style, { overflow: 'hidden' }]}>
+      {bufferARef.current ? (
+        <Image
+          source={{ uri: `data:image/jpeg;base64,${bufferARef.current}` }}
+          style={[StyleSheet.absoluteFill, { opacity: activeBuffer === 'a' ? 1 : 0 }]}
+          resizeMode={resizeMode}
+          fadeDuration={0}
+        />
+      ) : null}
+      {bufferBRef.current ? (
+        <Image
+          source={{ uri: `data:image/jpeg;base64,${bufferBRef.current}` }}
+          style={[StyleSheet.absoluteFill, { opacity: activeBuffer === 'b' ? 1 : 0 }]}
+          resizeMode={resizeMode}
+          fadeDuration={0}
+        />
+      ) : null}
+    </View>
+  );
+});
 
 // ==================== 常量配置 ====================
 const AGENT_PORT = 3001;
@@ -588,18 +628,23 @@ export default function App() {
     }
   }, [currentTab, isConnected]);
 
-  function handleScreenTouch(evt, touchType = null) {
-    if (!desktopContainerSize.width || !desktopContainerSize.height) return;
+  const lastMoveSentTimeRef = useRef(0);
+  const dragStartPosRef = useRef({ x: 0, y: 0 });
+  const isDraggingRef = useRef(false);
+
+  function handleScreenTouch(evt, touchType = null, customContainer = null) {
+    const container = customContainer || desktopContainerSize;
+    if (!container.width || !container.height) return;
     const { locationX, locationY } = evt.nativeEvent;
-    const scaleX = desktopScreenSize.width / desktopContainerSize.width;
-    const scaleY = desktopScreenSize.height / desktopContainerSize.height;
+    const scaleX = desktopScreenSize.width / container.width;
+    const scaleY = desktopScreenSize.height / container.height;
     const targetX = Math.min(desktopScreenSize.width, Math.max(0, Math.round(locationX * scaleX)));
     const targetY = Math.min(desktopScreenSize.height, Math.max(0, Math.round(locationY * scaleY)));
 
     setLastMousePos({ x: targetX, y: targetY });
 
     const mode = touchType || remoteMouseMode;
-    if (mode === 'click') {
+    if (mode === 'click' || mode === 'trackpad') {
       sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:0` });
     } else if (mode === 'double') {
       sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:1` });
@@ -607,6 +652,81 @@ export default function App() {
       sendAgentRequest('remote_mouse', { cmd: `CLICK:right:${targetX}:${targetY}:0` });
     } else if (mode === 'move') {
       sendAgentRequest('remote_mouse', { cmd: `MOVE:${targetX}:${targetY}` });
+    } else if (mode === 'drag') {
+      // 模拟拖拽模式：如果是一次轻触，执行左键单击
+      sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:0` });
+    }
+  }
+
+  function handlePanGrant(evt, gestureState, customContainer = null) {
+    const container = customContainer || desktopContainerSize;
+    if (!container.width || !container.height) return;
+    const { locationX, locationY } = evt.nativeEvent;
+    const scaleX = desktopScreenSize.width / container.width;
+    const scaleY = desktopScreenSize.height / container.height;
+    const targetX = Math.min(desktopScreenSize.width, Math.max(0, Math.round(locationX * scaleX)));
+    const targetY = Math.min(desktopScreenSize.height, Math.max(0, Math.round(locationY * scaleY)));
+
+    dragStartPosRef.current = { x: targetX, y: targetY };
+    setLastMousePos({ x: targetX, y: targetY });
+
+    if (remoteMouseMode === 'drag') {
+      isDraggingRef.current = true;
+      sendAgentRequest('remote_mouse', { cmd: `MOVE:${targetX}:${targetY}` });
+      setTimeout(() => {
+        sendAgentRequest('remote_mouse', { cmd: 'DOWN:left' });
+      }, 15);
+    }
+  }
+
+  function handlePanMove(evt, gestureState, customContainer = null) {
+    const now = Date.now();
+    if (now - lastMoveSentTimeRef.current < 25) return;
+    lastMoveSentTimeRef.current = now;
+
+    const container = customContainer || desktopContainerSize;
+    if (!container.width || !container.height) return;
+    const { locationX, locationY } = evt.nativeEvent;
+    const scaleX = desktopScreenSize.width / container.width;
+    const scaleY = desktopScreenSize.height / container.height;
+    const targetX = Math.min(desktopScreenSize.width, Math.max(0, Math.round(locationX * scaleX)));
+    const targetY = Math.min(desktopScreenSize.height, Math.max(0, Math.round(locationY * scaleY)));
+
+    setLastMousePos({ x: targetX, y: targetY });
+
+    if (remoteMouseMode === 'drag' || remoteMouseMode === 'move') {
+      sendAgentRequest('remote_mouse', { cmd: `MOVE:${targetX}:${targetY}` });
+    } else if (remoteMouseMode === 'trackpad') {
+      const relScale = 1.8;
+      const newX = Math.min(desktopScreenSize.width, Math.max(0, Math.round(dragStartPosRef.current.x + gestureState.dx * relScale)));
+      const newY = Math.min(desktopScreenSize.height, Math.max(0, Math.round(dragStartPosRef.current.y + gestureState.dy * relScale)));
+      sendAgentRequest('remote_mouse', { cmd: `MOVE:${newX}:${newY}` });
+    }
+  }
+
+  function handlePanRelease(evt, gestureState, customContainer = null) {
+    const container = customContainer || desktopContainerSize;
+    const { locationX, locationY } = evt.nativeEvent;
+    const scaleX = desktopScreenSize.width / (container.width || 1);
+    const scaleY = desktopScreenSize.height / (container.height || 1);
+    const targetX = Math.min(desktopScreenSize.width, Math.max(0, Math.round(locationX * scaleX)));
+    const targetY = Math.min(desktopScreenSize.height, Math.max(0, Math.round(locationY * scaleY)));
+
+    if (remoteMouseMode === 'drag') {
+      isDraggingRef.current = false;
+      sendAgentRequest('remote_mouse', { cmd: 'UP:left' });
+      return;
+    }
+
+    const isTap = Math.abs(gestureState.dx) < 6 && Math.abs(gestureState.dy) < 6;
+    if (isTap) {
+      if (remoteMouseMode === 'click' || remoteMouseMode === 'trackpad') {
+        sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:0` });
+      } else if (remoteMouseMode === 'double') {
+        sendAgentRequest('remote_mouse', { cmd: `CLICK:left:${targetX}:${targetY}:1` });
+      } else if (remoteMouseMode === 'right') {
+        sendAgentRequest('remote_mouse', { cmd: `CLICK:right:${targetX}:${targetY}:0` });
+      }
     }
   }
 
@@ -1447,6 +1567,7 @@ try {
                 </View>
 
                 {/* 实时桌面视口容器 */}
+                {/* 实时桌面视口容器 (双缓冲零闪烁) */}
                 <View
                   style={styles.desktopScreenContainer}
                   onLayout={(e) => {
@@ -1455,20 +1576,25 @@ try {
                   }}
                 >
                   {desktopFrame ? (
-                    <TouchableOpacity
-                      activeOpacity={0.95}
-                      style={{ width: '100%', height: '100%' }}
-                      onPress={(e) => handleScreenTouch(e, remoteMouseMode)}
-                      onLongPress={(e) => handleScreenTouch(e, 'right')}
-                      delayLongPress={450}
+                    <View
+                      style={{ width: '100%', height: '100%', position: 'relative' }}
+                      onStartShouldSetResponder={() => true}
+                      onMoveShouldSetResponder={() => true}
+                      onResponderGrant={(e) => handlePanGrant(e, null, desktopContainerSize)}
+                      onResponderMove={(e) => handlePanMove(e, null, desktopContainerSize)}
+                      onResponderRelease={(e) => handlePanRelease(e, { dx: 0, dy: 0 }, desktopContainerSize)}
                     >
-                      <Image
-                        source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
+                      <DoubleBufferedScreenImage
+                        frame={desktopFrame}
                         style={styles.desktopScreenImage}
                         resizeMode="contain"
-                        fadeDuration={0}
                       />
-                    </TouchableOpacity>
+                      {remoteMouseMode === 'drag' && (
+                        <View style={styles.dragModeBadge}>
+                          <Text style={styles.dragModeBadgeText}>✊ 模拟鼠标拖拽中 · 按住滑动移动窗口/选区</Text>
+                        </View>
+                      )}
+                    </View>
                   ) : (
                     <View style={styles.desktopLoadingBox}>
                       <ActivityIndicator size="large" color="#38BDF8" />
@@ -1486,33 +1612,37 @@ try {
                 {/* 触控手势提示条 */}
                 <View style={styles.gestureHintBar}>
                   <Text style={styles.gestureHintText}>
-                    👆 单击={remoteMouseMode === 'double' ? '双击打开' : remoteMouseMode === 'right' ? '右键菜单' : '左键'} · 🎯 坐标: ({lastMousePos.x}, {lastMousePos.y}) · 支持点击右上角【⛶ 手机全屏遥控】放大操控！
+                    模式: {remoteMouseMode === 'drag' ? '✊ 拖拽模式' : remoteMouseMode === 'trackpad' ? '🖱️ 触控板模式' : remoteMouseMode === 'double' ? '✌️ 双击模式' : remoteMouseMode === 'right' ? '👉 右键模式' : '👆 单击模式'} · 🎯 坐标: ({lastMousePos.x}, {lastMousePos.y}) · 支持点击右上角【⛶ 手机全屏遥控】放大操控！
                   </Text>
                 </View>
 
                 {/* 运维触控快捷工具条 */}
                 <View style={styles.card}>
-                  <Text style={styles.cardTitle}>🎮 触控鼠标模式与快捷动作</Text>
+                  <Text style={styles.cardTitle}>🎮 向日葵鼠标模式与快捷动作</Text>
 
                   {/* 模式切换 */}
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                    {[
-                      { id: 'click', label: '👆 左键单击' },
-                      { id: 'double', label: '✌️ 双击打开' },
-                      { id: 'right', label: '👉 右键菜单' },
-                      { id: 'move', label: '🎯 移动光标' },
-                    ].map((m) => (
-                      <TouchableOpacity
-                        key={m.id}
-                        style={[styles.modeBtn, remoteMouseMode === m.id && styles.modeBtnActive]}
-                        onPress={() => setRemoteMouseMode(m.id)}
-                      >
-                        <Text style={[styles.modeBtnText, remoteMouseMode === m.id && styles.modeBtnTextActive]}>
-                          {m.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
+                  <ScrollView horizontal={true} showsHorizontalScrollIndicator={false} style={{ marginTop: 10 }}>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      {[
+                        { id: 'click', label: '👆 单击' },
+                        { id: 'drag', label: '✊ 按住拖拽' },
+                        { id: 'trackpad', label: '🖱️ 触控板' },
+                        { id: 'double', label: '✌️ 双击' },
+                        { id: 'right', label: '👉 右键' },
+                        { id: 'move', label: '🎯 移动' },
+                      ].map((m) => (
+                        <TouchableOpacity
+                          key={m.id}
+                          style={[styles.modeBtn, remoteMouseMode === m.id && styles.modeBtnActive]}
+                          onPress={() => setRemoteMouseMode(m.id)}
+                        >
+                          <Text style={[styles.modeBtnText, remoteMouseMode === m.id && styles.modeBtnTextActive]}>
+                            {m.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
 
                   {/* 鼠标滚轮 */}
                   <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
@@ -1956,13 +2086,14 @@ try {
         </View>
       </Modal>
 
-      {/* 沉浸式手机全屏遥控与缩放 Modal */}
+      {/* 沉浸式手机全屏遥控与横屏/缩放 Modal */}
       <Modal
         visible={isFullScreen}
         transparent={false}
         animationType="slide"
         onRequestClose={() => {
           setIsFullScreen(false);
+          setIsLandscape(false);
           setZoomScale(1.0);
         }}
       >
@@ -1973,12 +2104,22 @@ try {
           <View style={styles.fullScreenTopBar}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <View style={[styles.statusDot, { backgroundColor: '#10B981' }]} />
-              <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFF' }}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#FFF' }}>
                 {activeHostInfo?.hostname || '电脑桌面'} ({desktopScreenSize.width}x{desktopScreenSize.height})
               </Text>
             </View>
 
             <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+              {/* 横屏/竖屏旋转切换 */}
+              <TouchableOpacity
+                style={[styles.fullScreenPill, isLandscape && { backgroundColor: 'rgba(16, 185, 129, 0.3)', borderColor: '#10B981' }]}
+                onPress={() => setIsLandscape(prev => !prev)}
+              >
+                <Text style={[styles.fullScreenPillText, isLandscape && { color: '#10B981' }]}>
+                  {isLandscape ? '🔄 竖屏' : '🔄 横屏'}
+                </Text>
+              </TouchableOpacity>
+
               {/* 缩放切换 */}
               <TouchableOpacity
                 style={styles.fullScreenPill}
@@ -1986,7 +2127,7 @@ try {
                   setZoomScale(prev => (prev === 1.0 ? 1.5 : prev === 1.5 ? 2.0 : 1.0));
                 }}
               >
-                <Text style={styles.fullScreenPillText}>🔍 {zoomScale}x 缩放</Text>
+                <Text style={styles.fullScreenPillText}>🔍 {zoomScale}x</Text>
               </TouchableOpacity>
 
               {/* 刷新 */}
@@ -1996,7 +2137,7 @@ try {
                   sendAgentRequest('desktop_start', { width: 1280, height: 720, quality: 65, fps: 20 });
                 }}
               >
-                <Text style={styles.fullScreenPillText}>🔄 刷新</Text>
+                <Text style={styles.fullScreenPillText}>🔄</Text>
               </TouchableOpacity>
 
               {/* 打字 */}
@@ -2004,7 +2145,7 @@ try {
                 style={styles.fullScreenPill}
                 onPress={() => setIsTextModalOpen(true)}
               >
-                <Text style={styles.fullScreenPillText}>⌨️ 打字</Text>
+                <Text style={styles.fullScreenPillText}>⌨️</Text>
               </TouchableOpacity>
 
               {/* 退出全屏 */}
@@ -2012,6 +2153,7 @@ try {
                 style={[styles.fullScreenPill, { backgroundColor: 'rgba(239, 68, 68, 0.4)', borderColor: '#EF4444' }]}
                 onPress={() => {
                   setIsFullScreen(false);
+                  setIsLandscape(false);
                   setZoomScale(1.0);
                 }}
               >
@@ -2020,7 +2162,7 @@ try {
             </View>
           </View>
 
-          {/* 全屏视口 (双向滚动以支持放大平移) */}
+          {/* 全屏视口 (双向滚动以支持放大平移与横竖屏适配) */}
           <ScrollView
             style={{ flex: 1, backgroundColor: '#000' }}
             contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', alignItems: 'center' }}
@@ -2032,96 +2174,120 @@ try {
               showsVerticalScrollIndicator={false}
               nestedScrollEnabled={true}
             >
-              <View
-                style={{
-                  width: Dimensions.get('window').width * zoomScale,
-                  height: (Dimensions.get('window').width * zoomScale * (desktopScreenSize.height / desktopScreenSize.width)),
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                }}
-              >
-                {desktopFrame ? (
-                  <TouchableOpacity
-                    activeOpacity={0.95}
-                    style={{ width: '100%', height: '100%' }}
-                    onPress={(e) => {
-                      const container = {
-                        width: Dimensions.get('window').width * zoomScale,
-                        height: (Dimensions.get('window').width * zoomScale * (desktopScreenSize.height / desktopScreenSize.width))
-                      };
-                      handleScreenTouch(e, remoteMouseMode, container);
+              {(() => {
+                const winW = Dimensions.get('window').width;
+                const winH = Dimensions.get('window').height;
+                const baseW = isLandscape ? winH : winW;
+                const calcW = baseW * zoomScale;
+                const calcH = calcW * (desktopScreenSize.height / (desktopScreenSize.width || 1));
+                const fullContainer = { width: calcW, height: calcH };
+
+                return (
+                  <View
+                    style={isLandscape ? {
+                      width: calcW,
+                      height: calcH,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      transform: [{ rotate: '90deg' }]
+                    } : {
+                      width: calcW,
+                      height: calcH,
+                      justifyContent: 'center',
+                      alignItems: 'center'
                     }}
-                    onLongPress={(e) => {
-                      const container = {
-                        width: Dimensions.get('window').width * zoomScale,
-                        height: (Dimensions.get('window').width * zoomScale * (desktopScreenSize.height / desktopScreenSize.width))
-                      };
-                      handleScreenTouch(e, 'right', container);
-                    }}
-                    delayLongPress={450}
                   >
-                    <Image
-                      source={{ uri: `data:image/jpeg;base64,${desktopFrame}` }}
-                      style={{ width: '100%', height: '100%' }}
-                      resizeMode="contain"
-                      fadeDuration={0}
-                    />
-                  </TouchableOpacity>
-                ) : (
-                  <View style={styles.desktopLoadingBox}>
-                    <ActivityIndicator size="large" color="#38BDF8" />
-                    <Text style={styles.desktopLoadingText}>正在拉取全屏桌面画面...</Text>
+                    {desktopFrame ? (
+                      <View
+                        style={{ width: '100%', height: '100%', position: 'relative' }}
+                        onStartShouldSetResponder={() => true}
+                        onMoveShouldSetResponder={() => true}
+                        onResponderGrant={(e) => handlePanGrant(e, null, fullContainer)}
+                        onResponderMove={(e) => handlePanMove(e, null, fullContainer)}
+                        onResponderRelease={(e) => handlePanRelease(e, { dx: 0, dy: 0 }, fullContainer)}
+                      >
+                        <DoubleBufferedScreenImage
+                          frame={desktopFrame}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="contain"
+                        />
+                        {remoteMouseMode === 'drag' && (
+                          <View style={[styles.dragModeBadge, { top: 12 }]}>
+                            <Text style={styles.dragModeBadgeText}>✊ 向日葵拖拽模式中 · 正在移动窗口/选区</Text>
+                          </View>
+                        )}
+                      </View>
+                    ) : (
+                      <View style={styles.desktopLoadingBox}>
+                        <ActivityIndicator size="large" color="#38BDF8" />
+                        <Text style={styles.desktopLoadingText}>正在拉取全屏桌面画面...</Text>
+                      </View>
+                    )}
                   </View>
-                )}
-              </View>
+                );
+              })()}
             </ScrollView>
           </ScrollView>
 
           {/* 底部悬浮操控工具条 */}
-          <View style={styles.fullScreenBottomBar}>
-            <TouchableOpacity
-              style={[styles.floatingKeyBtn, remoteMouseMode === 'click' && styles.floatingKeyBtnActive]}
-              onPress={() => setRemoteMouseMode('click')}
-            >
-              <Text style={styles.floatingKeyText}>👆 单击</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.floatingKeyBtn, remoteMouseMode === 'double' && styles.floatingKeyBtnActive]}
-              onPress={() => setRemoteMouseMode('double')}
-            >
-              <Text style={styles.floatingKeyText}>✌️ 双击</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.floatingKeyBtn, remoteMouseMode === 'right' && styles.floatingKeyBtnActive]}
-              onPress={() => setRemoteMouseMode('right')}
-            >
-              <Text style={styles.floatingKeyText}>👉 右键</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingKeyBtn}
-              onPress={() => handleSendRemoteKey('Win')}
-            >
-              <Text style={styles.floatingKeyText}>🪟 Win</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingKeyBtn}
-              onPress={() => handleSendRemoteKey('WinD')}
-            >
-              <Text style={styles.floatingKeyText}>🖥️ 桌面</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingKeyBtn}
-              onPress={() => sendAgentRequest('remote_mouse', { cmd: 'WHEEL:120' })}
-            >
-              <Text style={styles.floatingKeyText}>▲ 滚轮</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.floatingKeyBtn}
-              onPress={() => sendAgentRequest('remote_mouse', { cmd: 'WHEEL:-120' })}
-            >
-              <Text style={styles.floatingKeyText}>▼ 滚轮</Text>
-            </TouchableOpacity>
-          </View>
+          <ScrollView horizontal={true} showsHorizontalScrollIndicator={false} style={{ maxHeight: 52 }}>
+            <View style={styles.fullScreenBottomBar}>
+              <TouchableOpacity
+                style={[styles.floatingKeyBtn, remoteMouseMode === 'click' && styles.floatingKeyBtnActive]}
+                onPress={() => setRemoteMouseMode('click')}
+              >
+                <Text style={styles.floatingKeyText}>👆 单击</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.floatingKeyBtn, remoteMouseMode === 'drag' && styles.floatingKeyBtnActive]}
+                onPress={() => setRemoteMouseMode('drag')}
+              >
+                <Text style={styles.floatingKeyText}>✊ 拖拽</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.floatingKeyBtn, remoteMouseMode === 'trackpad' && styles.floatingKeyBtnActive]}
+                onPress={() => setRemoteMouseMode('trackpad')}
+              >
+                <Text style={styles.floatingKeyText}>🖱️ 触控板</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.floatingKeyBtn, remoteMouseMode === 'double' && styles.floatingKeyBtnActive]}
+                onPress={() => setRemoteMouseMode('double')}
+              >
+                <Text style={styles.floatingKeyText}>✌️ 双击</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.floatingKeyBtn, remoteMouseMode === 'right' && styles.floatingKeyBtnActive]}
+                onPress={() => setRemoteMouseMode('right')}
+              >
+                <Text style={styles.floatingKeyText}>👉 右键</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.floatingKeyBtn}
+                onPress={() => handleSendRemoteKey('Win')}
+              >
+                <Text style={styles.floatingKeyText}>🪟 Win</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.floatingKeyBtn}
+                onPress={() => handleSendRemoteKey('WinD')}
+              >
+                <Text style={styles.floatingKeyText}>🖥️ 桌面</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.floatingKeyBtn}
+                onPress={() => sendAgentRequest('remote_mouse', { cmd: 'WHEEL:120' })}
+              >
+                <Text style={styles.floatingKeyText}>▲ 滚轮</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.floatingKeyBtn}
+                onPress={() => sendAgentRequest('remote_mouse', { cmd: 'WHEEL:-120' })}
+              >
+                <Text style={styles.floatingKeyText}>▼ 滚轮</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         </SafeAreaView>
       </Modal>
 
@@ -3155,6 +3321,23 @@ const styles = StyleSheet.create({
   aiBannerBtnText: {
     fontSize: 11,
     fontWeight: '800',
+    color: '#FFF',
+  },
+  dragModeBadge: {
+    position: 'absolute',
+    top: 8,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(2, 132, 199, 0.85)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    zIndex: 50,
+  },
+  dragModeBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
     color: '#FFF',
   },
 });
